@@ -1,0 +1,47 @@
+
+# 第三章 PyTorch中重要的数据结构
+
+## Tensor
+
+在C++中，Tensor的定义在
+
+
+## Node
+Node的定义在torch/csrc/autograd/function.h中。
+
+从名称上不难看出，Node代表计算图中的节点。计算图除了节点之外，还会有边，也就是Edge.
+
+Tensor中方法grad_fn()返回的就是一个Node
+
+## Edge
+Node的定义在torch/csrc/autograd/edge.h中。
+
+
+## VariableHooks
+获取Tensor的grad_fn()时，使用VariableHooks这个类来返回的，而且逻辑很复杂，还没看懂
+
+https://blog.csdn.net/u012436149/article/details/69230136
+
+这里要注意的是，hook 只能注册到 Module 上，即，仅仅是简单的 op 包装的 Module，而不是我们继承 Module时写的那个类，我们继承 Module写的类叫做 Container。
+每次调用forward()计算输出的时候，这个hook就会被调用。它应该拥有以下签名：
+
+可以看到，当我们执行model(x)的时候，底层干了以下几件事：
+
+    调用 forward 方法计算结果
+
+    判断有没有注册 forward_hook，有的话，就将 forward 的输入及结果作为hook的实参。然后让hook自己干一些不可告人的事情。
+
+### register_backward_hook
+
+在module上注册一个bachward hook。此方法目前只能用在Module上，不能用在Container上，当Module的forward函数中只有一个Function的时候，称为Module，如果Module包含其它Module，称之为Container
+
+每次计算module的inputs的梯度的时候，这个hook会被调用。hook应该拥有下面的signature。
+
+hook(module, grad_input, grad_output) -> Tensor or None
+
+如果module有多个输入输出的话，那么grad_input grad_output将会是个tuple。
+hook不应该修改它的arguments，但是它可以选择性的返回关于输入的梯度，这个返回的梯度在后续的计算中会替代grad_input。
+
+这个函数返回一个 句柄(handle)。它有一个方法 handle.remove()，可以用这个方法将hook从module移除。
+
+从上边描述来看，backward hook似乎可以帮助我们处理一下计算完的梯度。看下面nn.Module中register_backward_hook方法的实现，和register_forward_hook方法的实现几乎一样，都是用字典把注册的hook保存起来。
