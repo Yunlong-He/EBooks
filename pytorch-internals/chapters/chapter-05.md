@@ -129,7 +129,104 @@ OperatorHandle的call()方法会调用Dispather::call()方法。
 
 ## Dispatcher
 
-Dispatcher的作用是根据实际的上下文选择不同的operator实现，例如：
+Dispatcher的作用是根据实际的上下文选择不同的operator实现，
+
+## 算子的注册过程
+增加新的算子时，需要先使用TORCH_LIBRARY定义算子的schema，然后使用宏 TORCH_LIBRARY_IMPL来注册该算子在cpu、cuda、XLA等上的实现。注册的时候，需要指定namespace及该namespace下的dispatch_key，如果注册的是fallback实现（缺省实现）,namespace可以使用“_”。
+
+
+下面我们看一下这两个宏的实现：
+
+```C++
+#define TORCH_LIBRARY(ns, m)                                                   \
+  static void TORCH_LIBRARY_init_##ns(torch::Library&);                        \
+  static const torch::detail::TorchLibraryInit TORCH_LIBRARY_static_init_##ns( \
+      torch::Library::DEF,                                                     \
+      &TORCH_LIBRARY_init_##ns,                                                \
+      #ns,                                                                     \
+      c10::nullopt,                                                            \
+      __FILE__,                                                                \
+      __LINE__);                                                               \
+  void TORCH_LIBRARY_init_##ns(torch::Library& m)
+
+
+#define TORCH_LIBRARY_IMPL(ns, k, m) _TORCH_LIBRARY_IMPL(ns, k, m, C10_UID)
+
+#define _TORCH_LIBRARY_IMPL(ns, k, m, uid)                             \
+  static void C10_CONCATENATE(                                         \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library&);    \
+  static const torch::detail::TorchLibraryInit C10_CONCATENATE(        \
+      TORCH_LIBRARY_IMPL_static_init_##ns##_##k##_, uid)(              \
+      torch::Library::IMPL,                                            \
+      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check( \
+          c10::DispatchKey::k)>(                                       \
+          []() {                                                       \
+            return &C10_CONCATENATE(                                   \
+                TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid);           \
+          },                                                           \
+          []() { return [](torch::Library&) -> void {}; }),            \
+      #ns,                                                             \
+      c10::make_optional(c10::DispatchKey::k),                         \
+      __FILE__,                                                        \
+      __LINE__);                                                       \
+  void C10_CONCATENATE(                                                \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
+
+```
+
+在VariableTypeEverything.cpp中，有这样一条语句：
+```C++
+TORCH_LIBRARY_IMPL(aten, Autograd, m) {
+  ...
+}
+```
+展开之后的形式如下：
+
+```C++
+  
+static void TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID(torch::Library&);
+  static const torch::detail::TorchLibraryInit 
+      TORCH_LIBRARY_IMPL_static_init_aten_Autograd_C10_UID(
+      torch::Library::IMPL,
+      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check(
+          c10::DispatchKey::k)>(
+          []() {
+            return & TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID;
+          },
+          []() { return [](torch::Library&) -> void {}; }),
+      #ns,                                                             \
+      c10::make_optional(c10::DispatchKey::k),                         \
+      __FILE__,                                                        \
+      __LINE__);                                                       \
+  void C10_CONCATENATE(                                                \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
+
+```
+
+对于每一个dispatch_key, 宏TORCH_LIBRARY_IMPL定义了一个函数，允许用户在这个函数体内注册
+
+
+例如，在下面的代码中，注册了包括add_Tensor在内的多个算子。
+
+```C++
+// torch/csrc/autograd/generated/VariableTypeEveryThing.cpp
+
+TORCH_LIBRARY_IMPL(aten, Autograd, m) {
+  // ...
+  m.impl("add.Tensor",
+         TORCH_FN(VariableType::add_Tensor)
+  );
+  m.impl("add.Scalar",
+         TORCH_FN(VariableType::add_Scalar)
+  );
+  // ...
+}
+```
+
+```C++
+
+
+```
 
 ## 参考
 - https://pytorch.org/tutorials/advanced/dispatcher.html
