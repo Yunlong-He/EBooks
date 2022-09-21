@@ -1048,3 +1048,4 @@ struct Edge {
 
 ## 参考
 - PYTORCH 自动微分（二）https://zhuanlan.zhihu.com/p/111874952
+- https://zhuanlan.zhihu.com/p/69294347

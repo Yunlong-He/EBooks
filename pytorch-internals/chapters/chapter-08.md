@@ -8,3 +8,4 @@ GIL(Global Interpreter Lock)是一个全局的锁，深度学习框架属于计�
 ## 参考
 
 - 一文详解 Python GIL 设计 https://zhuanlan.zhihu.com/p/363040263
+- 万字综述，核心开发者全面解读PyTorch内部机制 https://zhuanlan.zhihu.com/p/67834038
