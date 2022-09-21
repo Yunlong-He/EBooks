@@ -104,6 +104,74 @@ at::Tensor add_Tensor::call(const at::Tensor & self, const at::Tensor & other, c
 
 这里创建的op的类型是c10::OperatorHandle
 
+## Dispatcher机制
+
+所有的算子都是注册在Dispatcher里的，在调用的时候，根据函数名词和传递的参数类型，dispatcher会寻找相应的实现并进行调用；
+
+```C++
+class TORCH_API Dispatcher final {
+private:
+
+  struct OperatorDef final { ... };
+
+public:
+  static Dispatcher& realSingleton();
+
+  C10_ALWAYS_INLINE static Dispatcher& singleton() { ...  }
+
+  c10::optional<OperatorHandle> findSchema(const OperatorName& operator_name);
+
+  OperatorHandle findSchemaOrThrow(const char* name, const char* overload_name);
+
+  c10::optional<OperatorHandle> findOp(const OperatorName& operator_name);
+
+  const std::vector<OperatorName> getAllOpNames();
+
+  template<class Return, class... Args>
+  Return call(const TypedOperatorHandle<Return (Args...)>& op, Args... args) const;
+
+  template<class Return, class... Args>
+  Return redispatch(const TypedOperatorHandle<Return (Args...)>& op, DispatchKeySet currentDispatchKeySet, Args... args) const;
+
+  // Invoke an operator via the boxed calling convention using an IValue stack
+  void callBoxed(const OperatorHandle& op, Stack* stack) const;
+
+  // TODO: This will only be useful if we write a backend fallback that plumbs dispatch keys (currently there are none)
+  // See Note [Plumbing Keys Through The Dispatcher]
+  void redispatchBoxed(const OperatorHandle& op, DispatchKeySet dispatchKeySet, Stack* stack) const;
+
+
+  RegistrationHandleRAII registerDef(FunctionSchema schema, std::string debug);
+  RegistrationHandleRAII registerImpl(OperatorName op_name, c10::optional<DispatchKey> dispatch_key, KernelFunction kernel, c10::optional<impl::CppSignature> cpp_signature, std::unique_ptr<FunctionSchema> inferred_function_schema, std::string debug);
+
+  RegistrationHandleRAII registerName(OperatorName op_name);
+
+  RegistrationHandleRAII registerFallback(DispatchKey dispatch_key, KernelFunction kernel, std::string debug);
+
+  RegistrationHandleRAII registerLibrary(std::string ns, std::string debug);
+
+  std::vector<OperatorName> getRegistrationsForDispatchKey(c10::optional<DispatchKey> k) const;
+
+private:
+  // ...
+
+  std::list<OperatorDef> operators_;
+  LeftRight<ska::flat_hash_map<OperatorName, OperatorHandle>> operatorLookupTable_;
+  ska::flat_hash_map<std::string, std::string> libraries_;
+
+  std::array<impl::AnnotatedKernel, num_runtime_entries> backendFallbackKernels_;
+
+  // ...
+};
+
+```
+
+这里看到两种注册的类型，一种是OperatorHandler，注册到operatorLookupTable_中，可以根据OperatorName查询，另一种是Function，一组Function注册到Library之后，再将Library注册到libraries_。
+
+比如对于例子中的 y = x + 2这条语句，dispatcher会查询到一个OperatorHandler op
+， op.operatorDef_->op.name_就是OperatorName("aten::add"，"Tensor")，但是注册的kernelfunction很多。
+
+
 ```C++
 // ./aten/src/ATen/core/dispatch/Dispatcher.h
 
@@ -126,6 +194,41 @@ private:
 };
 ```
 OperatorHandle的call()方法会调用Dispather::call()方法。
+
+继续跟踪，会走到
+```Bash
+at::native::AVX2::cpu_kernel_vec<> (grain_size=32768, vop=..., op=..., iter=...)
+    at ../aten/src/ATen/native/cpu/Loops.h:349
+
+
+#0  at::native::AVX2::cpu_kernel_vec<> (grain_size=32768, vop=..., op=..., iter=...)
+    at ../aten/src/ATen/native/cpu/Loops.h:349
+#1  at::native::(anonymous namespace)::<lambda()>::operator() (__closure=<optimized out>)
+    at /lab/tmp/pytorch/build/aten/src/ATen/UfuncCPUKernel_add.cpp:61
+#2  at::native::(anonymous namespace)::add_kernel (iter=..., alpha=...)
+    at /lab/tmp/pytorch/build/aten/src/ATen/UfuncCPUKernel_add.cpp:61
+#3  0x00007fffe717e7be in at::(anonymous namespace)::wrapper_add_Tensor (self=..., other=..., alpha=...)
+    at aten/src/ATen/RegisterCPU.cpp:1595
+
+
+(gdb) bt
+#0  at::native::AVX2::vectorized_loop<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)>&, at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(at::vec::AVX2::Vectorized<float>, at::vec::AVX2::Vectorized<float>)>&> (vop=..., op=..., S=2, n=4, data_=0x7fffffffd1c0)
+    at ../aten/src/ATen/native/cpu/Loops.h:212
+#1  at::native::AVX2::VectorizedLoop2d<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)>, at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(at::vec::AVX2::Vectorized<float>, at::vec::AVX2::Vectorized<float>)> >::<lambda(size_t)>::operator() (idx=2, __closure=<optimized out>)
+    at ../aten/src/ATen/native/cpu/Loops.h:287
+#2  at::native::AVX2::unroll_contiguous_scalar_checks<function_traits<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)> >, at::native::AVX2::VectorizedLoop2d<op_t, vop_t>::operator()(char**, const int64_t*, int64_t, int64_t) [with op_t = at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)>; vop_t = at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(at::vec::AVX2::Vectorized<float>, at::vec::AVX2::Vectorized<float>)>]::<lambda(size_t)>, 1> (
+    cb=..., strides=0x7fffffffd300) at ../aten/src/ATen/native/cpu/Loops.h:246
+#3  at::native::AVX2::unroll_contiguous_scalar_checks<function_traits<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)> >, at::native::AVX2::VectorizedLoop2d<op_t, vop_t>::operator()(char**, const int64_t*, int64_t, int64_t) [with op_t = at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)>; vop_t = at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(at::vec::AVX2::Vectorized<float>, at::vec::AVX2::Vectorized<float>)>]::<lambda(size_t)>, 0, 1> (
+    cb=..., strides=0x7fffffffd300) at ../aten/src/ATen/native/cpu/Loops.h:248
+#4  at::native::AVX2::VectorizedLoop2d<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)>, at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(at::vec::AVX2::Vectorized<float>, at::vec::AVX2::Vectorized<float>)> >::operator() (size1=1, size0=4, strides=0x7fffffffd300, base=0x0, this=0x7fffffffd4e0)
+    at ../aten/src/ATen/native/cpu/Loops.h:283
+#5  c10::function_ref<void(char**, long int const*, long int, long int)>::callback_fn<at::native::AVX2::VectorizedLoop2d<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(scalar_t, scalar_t)>, at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, const c10::Scalar&)::<lambda()>::<lambda(at::vec::AVX2::Vectorized<float>, at::vec::AVX2::Vectorized<float>)> > >(intptr_t, char **, const long *, long, long) (callable=callable@entry=140737488344288, 
+    params#0=params#0@entry=0x7fffffffd270, params#1=params#1@entry=0x7fffffffd300, params#2=params#2@entry=4, 
+    params#3=params#3@entry=1) at ../c10/util/FunctionRef.h:43
+
+
+```
+
 
 ## Dispatcher
 
@@ -223,7 +326,10 @@ TORCH_LIBRARY_IMPL(aten, Autograd, m) {
 }
 ```
 
+
+
 ```C++
+THPVariable_add ->
 
 
 ```
