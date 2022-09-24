@@ -1,6 +1,34 @@
 
 # 自动微分
 
+## 计算图
+
+在计算图中，autograd会记录所有的操作，并生成一个DAG（有向无环图），其中输出的tensor是根节点，输入的tensor是叶子节点，根据链式法则，梯度的计算是从根结点到叶子节点的逐步计算过程。
+
+在前向阶段，autograd同时做两件事：
+- 根据算子计算结果Tensor
+- 维护算子的梯度函数
+
+在反向阶段，当.backward()被调用时，autograd:
+- 对于节点的每一个梯度函数，计算相应节点的梯度
+- 在节点上对梯度进行累加，并保存到节点的.grad属性上
+- 根据链式法则，按照同样的方式计算，一直到叶子节点
+
+对于一个简单的例子：
+```python
+import torch
+
+a = torch.tensor([2., 3.], requires_grad=True)
+b = torch.tensor([6., 4.], requires_grad=True)
+
+Q = 3*a**3 - b**2
+
+```
+下图是对应的计算图，其中的函数代表梯度计算函数：
+<img src='../images/dag_autograd.png'/>
+
+
+
 ## 数据结构
 
 ## TensorImpl是Tensor的实现
@@ -23,6 +51,8 @@ Variable: 就是Tensor，为了向前兼容保留的
     会实例化 AutogradMeta , autograd需要的关键信息都在这里
 
 ```C++
+// c10/core/TensorImpl.h
+
 struct C10_API TensorImpl : public c10::intrusive_ptr_target {
   // ...
 public:
@@ -73,6 +103,118 @@ private:
   DispatchKeySet key_set_;  
 }
 ```
+ autograd_meta_表示 Variable 中关于计算梯度的元数据信息，AutogradMetaInterface 是一个接口，有不同的子类，这里的 Variable 对象的梯度计算的元数据类型为 AutogradMeta，其部分成员为 
+```C++
+// torch/csrc/autograd/variable.h
+
+struct TORCH_API AutogradMeta : public c10::AutogradMetaInterface {
+  std::string name_;
+
+  Variable grad_;
+  std::shared_ptr<Node> grad_fn_;
+  std::weak_ptr<Node> grad_accumulator_;
+  std::shared_ptr<ForwardGrad> fw_grad_;
+
+  std::vector<std::shared_ptr<FunctionPreHook>> hooks_;
+  std::shared_ptr<hooks_list> cpp_hooks_list_;
+
+  bool requires_grad_;
+  bool retains_grad_;
+  bool is_view_;
+  uint32_t output_nr_;
+
+  // ...
+}
+
+```
+
+grad_ 表示反向传播时，关于当前 Variable 的梯度值。grad_fn_ 是用于计算非叶子Variable的梯度的函数，比如 AddBackward0对象用于计算result这个Variable 的梯度。对于叶子Variable，此字段为 None。grad_accumulator_ 用于累加叶子 Variable 的梯度累加器，比如 AccumulateGrad 对象用于累加 self的梯度。对于非叶 Variable，此字段为 None。output_nr_ 表示当前 Variable 是 计算操作的第一个输出，此值从 0 开始。
+
+可以看到，grad_fn_和grad_accumulator_都是Node的指针，这是因为在计算图中，算子的C++类型是Node，不同的算子的实现都是Node的子类。
+
+Node是由上一级的Node创建的
+
+```C++
+// torch/include/torch/csrc/autograd/function.h
+
+struct TORCH_API Node : std::enable_shared_from_this<Node> {
+ public:
+  /// Construct a new `Node` with the given `next_edges`
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  explicit Node(
+      uint64_t sequence_nr,
+      edge_list&& next_edges = edge_list())
+      : sequence_nr_(sequence_nr),
+      next_edges_(std::move(next_edges)) {
+
+    for (const Edge& edge: next_edges_) {
+      update_topological_nr(edge);
+    }
+
+    if (AnomalyMode::is_enabled()) {
+      metadata()->store_stack();
+
+      assign_parent();
+    }
+
+    // Store the thread_id of the forward operator.
+    // See NOTE [ Sequence Numbers ]
+    thread_id_ = at::RecordFunction::currentThreadId();
+  }
+
+
+
+  /// Evaluates the function on the given inputs and returns the result of the
+  /// function call.
+  variable_list operator()(variable_list&& inputs) {
+    // ...
+    return apply(std::move(inputs));
+  }
+
+  uint32_t add_input_metadata(const at::Tensor& t) noexcept {
+    // ...
+  }
+
+  void add_next_edge(Edge edge) {
+    update_topological_nr(edge);
+    next_edges_.push_back(std::move(edge));
+  }
+
+ protected:
+  /// Performs the `Node`'s actual operation.
+  virtual variable_list apply(variable_list&& inputs) = 0;
+
+  variable_list traced_apply(variable_list inputs);
+
+
+  const uint64_t sequence_nr_;
+
+  uint64_t topological_nr_ = 0;
+
+
+  mutable bool has_parent_ = false;
+
+
+  uint64_t thread_id_ = 0;
+
+
+  std::mutex mutex_;
+
+  edge_list next_edges_;
+
+  PyObject* pyobj_ = nullptr; 
+
+  std::unique_ptr<AnomalyMetadata> anomaly_metadata_ = nullptr;
+
+  std::vector<std::unique_ptr<FunctionPreHook>> pre_hooks_;
+
+  std::vector<std::unique_ptr<FunctionPostHook>> post_hooks_;
+
+  at::SmallVector<InputMetadata, 2> input_metadata_;
+};
+
+```
+
 
 ### AutoGradMeta
 
@@ -182,4 +324,5 @@ autograd::Engine::thread_main(...)
 ## 参考
 
 - https://blog.csdn.net/zandaoguang/article/details/115713552
-
+- https://zhuanlan.zhihu.com/p/111239415
+- https://zhuanlan.zhihu.com/p/138203371

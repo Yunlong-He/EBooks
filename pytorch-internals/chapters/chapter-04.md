@@ -5,6 +5,27 @@
 
 在C++中，Tensor的定义在
 
+## TensorOption
+
+Note: 参考注释吧
+
+TensorOption是设计用来构造Tensor的工具。
+
+在C++中没有python中的keyword参数机制，比如这段代码：
+```python
+torch.zeros(2, 3, dtype=torch.int32)
+```
+在keyword参数机制下，参数的顺序和定义的可能不一样。因此在C++中实现这些函数时，将TensorOptions作为最后一个参数附在函数末尾，可以协助对参数的解析。
+
+实际使用时，at::zeros()系列函数隐式的使用TensorOptions。 TensorOptions可以看作是一个字典。
+
+
+```C++
+// c10/core/TensorOptions.h
+
+
+
+```
 
 ## Node
 Node的定义在torch/csrc/autograd/function.h中。

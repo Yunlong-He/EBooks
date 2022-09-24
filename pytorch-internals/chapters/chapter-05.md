@@ -338,6 +338,11 @@ THPVariable_add ->
 - https://pytorch.org/tutorials/advanced/dispatcher.html
 - http://blog.ezyang.com/2020/09/lets-talk-about-the-pytorch-dispatcher/
 - https://blog.csdn.net/Chris_zhangrx/article/details/119512418
+- https://zhuanlan.zhihu.com/p/67834038
+- https://blog.csdn.net/xixiaoyaoww/article/details/112211025
+- pytorch中的dispatcher https://zhuanlan.zhihu.com/p/390049109
+- [Pytorch 源码阅读] —— 谈谈 dispatcher（二）https://blog.csdn.net/Chris_zhangrx/article/details/119512418
+- [Pytorch 源码阅读] —— 谈谈 dispatcher（一） https://blog.csdn.net/Chris_zhangrx/article/details/119489853
 
 
 

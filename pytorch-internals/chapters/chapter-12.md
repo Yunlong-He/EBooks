@@ -94,15 +94,7 @@ tensor([[4.5000, 4.5000],
 ```python
 class Tensor(torch._C._TensorBase):
     def backward(self, gradient=None, retain_graph=None, create_graph=False, inputs=None):
-        r"""Computes the gradient of current tensor w.r.t. graph leaves.
 
-        The graph is differentiated using the chain rule. If the tensor is non-scalar (i.e. its data has more than one element) and requires gradient, the function additionally requires specifying ``gradient``.
-        It should be a tensor of matching type and location, that contains the gradient of the differentiated function w.r.t. ``self``.
-
-        This function accumulates gradients in the leaves - you might need to zero ``.grad`` attributes or set them to ``None`` before calling it.
-        See :ref:`Default gradient layouts<default-grad-layouts>`
-        for details on the memory layout of accumulated gradients.
-        """
         if has_torch_function_unary(self):
             return handle_torch_function(
                 Tensor.backward,
@@ -127,49 +119,6 @@ def backward(
     grad_variables: Optional[_TensorOrTensors] = None,
     inputs: Optional[_TensorOrTensors] = None,
 ) -> None:
-    r"""Computes the sum of gradients of given tensors with respect to graph
-    leaves.
-
-    .. note::
-        Using this method with ``create_graph=True`` will create a reference cycle
-        between the parameter and its gradient which can cause a memory leak.
-        We recommend using ``autograd.grad`` when creating the graph to avoid this.
-        If you have to use this function, make sure to reset the ``.grad`` fields of your
-        parameters to ``None`` after use to break the cycle and avoid the leak.
-
-    .. note::
-
-        If you run any forward ops, create ``grad_tensors``, and/or call ``backward``
-        in a user-specified CUDA stream context, see
-        :ref:`Stream semantics of backward passes<bwd-cuda-stream-semantics>`.
-
-    .. note::
-
-        When ``inputs`` are provided and a given input is not a leaf,
-        the current implementation will call its grad_fn (even though it is not strictly needed to get this gradients).
-        It is an implementation detail on which the user should not rely.
-        See https://github.com/pytorch/pytorch/pull/60521#issuecomment-867061780 for more details.
-
-    Args:
-        tensors (Sequence[Tensor] or Tensor): Tensors of which the derivative will be
-            computed.
-        grad_tensors (Sequence[Tensor or None] or Tensor, optional): The "vector" in
-            the Jacobian-vector product, usually gradients w.r.t. each element of
-            corresponding tensors. None values can be specified for scalar Tensors or
-            ones that don't require grad. If a None value would be acceptable for all
-            grad_tensors, then this argument is optional.
-        retain_graph (bool, optional): If ``False``, the graph used to compute the grad
-            will be freed. Note that in nearly all cases setting this option to ``True``
-            is not needed and often can be worked around in a much more efficient
-            way. Defaults to the value of ``create_graph``.
-        create_graph (bool, optional): If ``True``, graph of the derivative will
-            be constructed, allowing to compute higher order derivative products.
-            Defaults to ``False``.
-        inputs (Sequence[Tensor] or Tensor, optional): Inputs w.r.t. which the gradient
-            be will accumulated into ``.grad``. All other Tensors will be ignored. If
-            not provided, the gradient is accumulated into all the leaf Tensors that
-            were used to compute the attr::tensors.
-    """
     if grad_variables is not None:
         warnings.warn("'grad_variables' is deprecated. Use 'grad_tensors' instead.")
         if grad_tensors is None:
@@ -527,7 +476,11 @@ auto Engine::execute(
 }
 ```
 
+GraphTask在执行的过程中创建出来的。
+
 明显能够看出，execute()方法中的重要步骤是execute_with_graph_task()函数。
+
+执行的时候就是对graph_task进行BFS遍历，从root开始调用各Node的operator()重载函数。
 
 ```C++
 c10::intrusive_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
@@ -1049,3 +1002,5 @@ struct Edge {
 ## 参考
 - PYTORCH 自动微分（二）https://zhuanlan.zhihu.com/p/111874952
 - https://zhuanlan.zhihu.com/p/69294347
+- https://pytorch.org/blog/how-computational-graphs-are-executed-in-pytorch/
+- https://www.cnblogs.com/rossiXYZ/p/15481235.html
