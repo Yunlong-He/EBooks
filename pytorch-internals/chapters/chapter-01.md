@@ -1,6 +1,12 @@
 
 # 第1章 PyTorch程序的基本结构
 
+## 主要内容
+
+- PyTorch介绍
+- 
+
+
 &emsp;&emsp;下面是一个非常简单的PyTorch训练代码
 
 
