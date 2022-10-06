@@ -132,6 +132,49 @@ third_party/ideep
 
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件：
 
+## 生成的库
+
+```Bash
+# /pytorch/build/lib.linux-x86_64-3.7/torch
+./_C.cpython-37m-x86_64-linux-gnu.so
+./lib/libtorch_python.so
+./lib/libtorchbind_test.so
+./lib/libtorch_cpu.so
+./lib/libjitbackend_test.so
+./lib/libc10.so
+./lib/libshm.so
+./lib/libtorch.so
+./lib/libtorch_global_deps.so
+./lib/libbackend_with_compiler.so
+./_C_flatbuffer.cpython-37m-x86_64-linux-gnu.so
+./_dl.cpython-37m-x86_64-linux-gnu.so
+```
+其中_C.cpython-37m-x86_64-linux-gnu.so是主要的入口点，后面的章节我们会从这个入口点分析PyTorch的初始化过程。从库依赖也可以看出，这个库依赖于其他的一些PyTorch库，在必要时可以加载这些依赖库，如libtorch_python.so，libtorch.so，libtorch_cpu.so，libmkl_intel_lp64.so等（输出中的not found可忽略）。
+
+```Bash
+# pytorch/build/lib.linux-x86_64-3.7/torch
+
+$ ldd ./_C.cpython-37m-x86_64-linux-gnu.so 
+	linux-vdso.so.1 (0x00007fff18175000)
+	libtorch_python.so => /home/harry/lab/tmp/pytorch/build/lib.linux-x86_64-3.7/torch/./lib/libtorch_python.so (0x00007feff2d61000)
+	libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007feff2b42000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007feff2751000)
+	libshm.so => /home/harry/lab/tmp/pytorch/build/lib.linux-x86_64-3.7/torch/./lib/libshm.so (0x00007feff253c000)
+	libtorch.so => /home/harry/lab/tmp/pytorch/build/lib.linux-x86_64-3.7/torch/./lib/libtorch.so (0x00007feff233a000)
+	libtorch_cpu.so => /home/harry/lab/tmp/pytorch/build/lib.linux-x86_64-3.7/torch/./lib/libtorch_cpu.so (0x00007fefde33c000)
+	libc10.so => /home/harry/lab/tmp/pytorch/build/lib.linux-x86_64-3.7/torch/./lib/libc10.so (0x00007fefde005000)
+	libstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007fefddc7c000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007fefdd8de000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007fefdd6c6000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007feff4fcc000)
+	librt.so.1 => /lib/x86_64-linux-gnu/librt.so.1 (0x00007fefdd4be000)
+	libgomp.so.1 => /usr/lib/x86_64-linux-gnu/libgomp.so.1 (0x00007fefdd28f000)
+	libdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007fefdd08b000)
+	libmkl_intel_lp64.so => not found
+	libmkl_gnu_thread.so => not found
+	libmkl_core.so => not found
+```
+
 ## 常见问题
 
 - submodule没有下载完整
