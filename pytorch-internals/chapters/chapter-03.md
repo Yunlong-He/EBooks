@@ -1,67 +1,21 @@
 
 # 第四章 PyTorch的编译
 
-## 初步介绍
+## 主要内容
+- PyTorch的编译过程
+- setup.py的结构
+- 代码生成过程
+- 生成的二进制包
+
+## 编译PyTorch
 
 大多数情况下我们只需要安装PyTorch的二进制版本即可，即可进行普通的模型开发训练了，但如果要深入了解PyTorch的实现原理，或者对PyTorch做一些优化改进，需要从PyTorch的源码开始进行编译安装，在PyTorch的官网里有从源码安装的说明。
 
-以下的编译过程是基于
-
-## 编译环境准备
-
 根据官方文档，建议安葬Python 3.7或以上的环境，而且需要C++14的编译器，比如clang，一开始我在ubuntu中装了clang，是6.0，结果出现了一些编译选项的错误，于是卸载clang，安装gcc后，c++的版本是7.5。
 
-Python的环境我也根据建议安装了Anaconda.
+Python的环境我也根据建议安装了Anaconda，一方面Anaconda会自动安装很多库，包括PyTorch所依赖的mkl这样的加速库，另一方面Anaconda很方便在多个Python环境中切换，这样当一个环境出现问题时，可以随时切换到另一个Python环境。
 
-If you want to compile with CUDA support, install the following (note that CUDA is not supported on macOS)
-
-    NVIDIA CUDA 10.2 or above
-    NVIDIA cuDNN v7 or above
-    Compiler compatible with CUDA
-
-Note: You could refer to the cuDNN Support Matrix for cuDNN versions with the various supported CUDA, CUDA driver and NVIDIA hardware
-
-If you want to disable CUDA support, export the environment variable USE_CUDA=0. Other potentially useful environment variables may be found in setup.py.
-
-If you are building for NVIDIA's Jetson platforms (Jetson Nano, TX1, TX2, AGX Xavier), Instructions to install PyTorch for Jetson Nano are available here
-
-If you want to compile with ROCm support, install
-
-    AMD ROCm 4.0 and above installation
-    ROCm is currently supported only for Linux systems.
-
-If you want to disable ROCm support, export the environment variable USE_ROCM=0. Other potentially useful environment variables may be found in setup.py.
-
-## PyTorch的setup.py
-
-参考 https://blog.csdn.net/Sky_FULLl/article/details/125652654
-
-
-## PyTorch 动态代码生成
-
-参考 https://zhuanlan.zhihu.com/p/59425970
-参考 https://zhuanlan.zhihu.com/p/55966063
-
-PyTorch代码主要包括三部分：
-- <b>C10</b>. C10是Caffe Tensor Library的缩写。PyTorch目前正在将代码从ATen/core目录下迁移到C10中，目前存放的都是最核心、精简的、基础的Tensor函数和接口。
-- <b>ATen</b>，ATen是A TENsor library for C++11的缩写，是PyTorch的C++ tensor library。ATen部分有大量的代码是来声明和定义Tensor运算相关的逻辑的，除此之外，PyTorch还使用了aten/src/ATen/gen.py来动态生成一些ATen相关的代码。ATen基于C10。
-- <b>Torch</b>，部分代码仍然在使用以前的快要进入历史博物馆的Torch开源项目，比如具有下面这些文件名格式的文件：
-```text
-TH* = TorcH
-THC* = TorcH Cuda
-THCS* = TorcH Cuda Sparse (now defunct)
-THCUNN* = TorcH CUda Neural Network (see cunn)
-THD* = TorcH Distributed
-THNN* = TorcH Neural Network
-THS* = TorcH Sparse (now defunct)
-THP* = TorcH Python
-```
-
-
-
-PyTorch会使用tools/setup_helpers/generate_code.py来动态生成Torch层面相关的一些代码，这部分动态生成的逻辑将不在本文阐述，你可以关注Gemfield专栏的后续文章。
-
-C10目前最具代表性的一个class就是TensorImpl了，它实现了Tensor的最基础框架。继承者和使用者有：
+如果我们需要编译支持GPU的PyTorch，需要安装cuda、cudnn，其中cuda建议安装10.2以上，cuDNN建议v7以上版本。
 
 ## 编译步骤
 
@@ -95,6 +49,39 @@ gcc -pthread -shared -B /root/anaconda3/compiler_compat -L/root/anaconda3/lib -W
 |                                                                       |
 -------------------------------------------------------------------------
 ```
+
+## PyTorch的setup.py
+
+参考 https://blog.csdn.net/Sky_FULLl/article/details/125652654
+
+
+## PyTorch 动态代码生成
+
+参考 https://zhuanlan.zhihu.com/p/59425970
+参考 https://zhuanlan.zhihu.com/p/55966063
+
+PyTorch代码主要包括三部分：
+- <b>C10</b>. C10是Caffe Tensor Library的缩写。PyTorch目前正在将代码从ATen/core目录下迁移到C10中，目前存放的都是最核心、精简的、基础的Tensor函数和接口。
+- <b>ATen</b>，ATen是A TENsor library for C++11的缩写，是PyTorch的C++ tensor library。ATen部分有大量的代码是来声明和定义Tensor运算相关的逻辑的，除此之外，PyTorch还使用了aten/src/ATen/gen.py来动态生成一些ATen相关的代码。ATen基于C10。
+- <b>Torch</b>，部分代码仍然在使用以前的快要进入历史博物馆的Torch开源项目，比如具有下面这些文件名格式的文件：
+```text
+TH* = TorcH
+THC* = TorcH Cuda
+THCS* = TorcH Cuda Sparse (now defunct)
+THCUNN* = TorcH CUda Neural Network (see cunn)
+THD* = TorcH Distributed
+THNN* = TorcH Neural Network
+THS* = TorcH Sparse (now defunct)
+THP* = TorcH Python
+```
+
+
+
+PyTorch会使用tools/setup_helpers/generate_code.py来动态生成Torch层面相关的一些代码，这部分动态生成的逻辑将不在本文阐述，你可以关注Gemfield专栏的后续文章。
+
+C10目前最具代表性的一个class就是TensorImpl了，它实现了Tensor的最基础框架。继承者和使用者有：
+
+
 
 ### 编译第三方的库
 
@@ -130,7 +117,9 @@ third_party/ideep
 ```
 ## 代码生成
 
-ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件：
+ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
+
+
 
 ## 生成的库
 

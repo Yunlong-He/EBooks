@@ -10,7 +10,7 @@
 &emsp;&emsp;下面是一个非常简单的PyTorch训练代码
 
 
-```python {.line-numbers} {(width = 60) matrix(runif(100), ncol = 20)
+```python
 
 import os
 import time
