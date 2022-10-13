@@ -17,7 +17,19 @@ Python的环境我也根据建议安装了Anaconda，一方面Anaconda会自动�
 
 如果我们需要编译支持GPU的PyTorch，需要安装cuda、cudnn，其中cuda建议安装10.2以上，cuDNN建议v7以上版本。
 
+另外，为了不影响本机环境，建议基于容器环境进行编译。
+
 ## 编译步骤
+
+启动容器，挂载PyTorch源码所在的目录，然后启动编译命令：
+
+```Bash
+#YL  如果需要编译DEBUG版本，可以设置环境变量DEBUG=1，setup_helpers/env.py中，会识别这个环境变量，并在编译选项中加上‘-O0 -g'的选项。
+python setup.py clean
+python setup.py build
+```
+
+在编译启动后，会创建build目录，之后所有的编译工作都在这个目录下完成。
 
 如果没有什么问题，编译的最后输出如下：
 
@@ -53,6 +65,125 @@ gcc -pthread -shared -B /root/anaconda3/compiler_compat -L/root/anaconda3/lib -W
 ## PyTorch的setup.py
 
 参考 https://blog.csdn.net/Sky_FULLl/article/details/125652654
+
+PyTorch使用setuptools进行编译安装。
+
+> setuptools是常用的python库源码安装工具， 其最主要的函数是setup(...)，所有安装包需要的参数包括包名、版本、依赖库、指定编译哪些扩展、安装时拷贝哪些文件等等，都需要作为参数传递给setup()函数。
+
+
+下面我们看一下PyTorch的setup.py，为了节约篇幅，并且考虑到绝大多数同学会使用Linux环境进行编译，这里删掉了对其他平台（包括Windows）的处理。可以看到，编译相关的主要参数由函数configure_extension_build()生成。
+
+```Python
+
+# Constant known variables used throughout this file
+cwd = os.path.dirname(os.path.abspath(__file__))
+lib_path = os.path.join(cwd, "torch", "lib")
+third_party_path = os.path.join(cwd, "third_party")
+caffe2_build_dir = os.path.join(cwd, "build")
+
+def configure_extension_build():
+	#YL 读取环境变量作为编译选项
+    cmake_cache_vars = defaultdict(lambda: False, cmake.get_cmake_cache_variables())
+
+	#YL 处理编译选项
+
+    library_dirs.append(lib_path)
+    main_compile_args = []
+    main_libraries = ['torch_python']
+    main_link_args = []
+    main_sources = ["torch/csrc/stub.c"]
+
+    if cmake_cache_vars['USE_CUDA']:
+        library_dirs.append(
+            os.path.dirname(cmake_cache_vars['CUDA_CUDA_LIB']))
+
+    if build_type.is_debug():
+        extra_compile_args += ['-O0', '-g']
+        extra_link_args += ['-O0', '-g']
+
+
+    ################################################################################
+    # Declare extensions and package
+    ################################################################################
+
+    extensions = []
+    packages = find_packages(exclude=('tools', 'tools.*'))
+    C = Extension("torch._C",
+                  libraries=main_libraries,
+                  sources=main_sources,
+                  language='c',
+                  extra_compile_args=main_compile_args + extra_compile_args,
+                  include_dirs=[],
+                  library_dirs=library_dirs,
+                  extra_link_args=extra_link_args + main_link_args + make_relative_rpath_args('lib'))
+    C_flatbuffer = Extension("torch._C_flatbuffer",
+                             libraries=main_libraries,
+                             sources=["torch/csrc/stub_with_flatbuffer.c"],
+                             language='c',
+                             extra_compile_args=main_compile_args + extra_compile_args,
+                             include_dirs=[],
+                             library_dirs=library_dirs,
+                             extra_link_args=extra_link_args + main_link_args + make_relative_rpath_args('lib'))
+    extensions.append(C)
+    extensions.append(C_flatbuffer)
+
+    if not IS_WINDOWS:
+        DL = Extension("torch._dl",
+                       sources=["torch/csrc/dl.c"],
+                       language='c')
+        extensions.append(DL)
+
+    # These extensions are built by cmake and copied manually in build_extensions()
+    # inside the build_ext implementation
+    if cmake_cache_vars['BUILD_CAFFE2']:
+        extensions.append(
+            Extension(
+                name=str('caffe2.python.caffe2_pybind11_state'),
+                sources=[]),
+        )
+        if cmake_cache_vars['USE_CUDA']:
+            extensions.append(
+                Extension(
+                    name=str('caffe2.python.caffe2_pybind11_state_gpu'),
+                    sources=[]),
+            )
+        if cmake_cache_vars['USE_ROCM']:
+            extensions.append(
+                Extension(
+                    name=str('caffe2.python.caffe2_pybind11_state_hip'),
+                    sources=[]),
+            )
+
+    cmdclass = {
+        'bdist_wheel': wheel_concatenate,
+        'build_ext': build_ext,
+        'clean': clean,
+        'install': install,
+        'sdist': sdist,
+    }
+
+    entry_points = ...
+
+    return extensions, cmdclass, packages, entry_points, extra_install_requires
+
+
+
+if __name__ == '__main__':
+    extensions, cmdclass, packages, entry_points, extra_install_requires = configure_extension_build()
+    setup(
+        ext_modules=extensions,
+        cmdclass=cmdclass,
+        packages=packages,
+        entry_points=entry_points,
+        install_requires=install_requires,
+        package_data={
+			#YL  其他需要拷贝到安装目录的文件，包括可执行文件、一些库、头文件等
+        },
+		#YL 其他参赛
+    )
+```
+
+从上面的代码中可以看到，最主要的两个Extension是torch._C，
 
 
 ## PyTorch 动态代码生成
