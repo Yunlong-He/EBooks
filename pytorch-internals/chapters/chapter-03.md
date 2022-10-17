@@ -299,6 +299,18 @@ if __name__ == '__main__':
     )
 ```
 
+PyTorch使用的是自定义的编译方法，指定了wheel_concatenate和build_ext这两个函数，分别负责库文件和扩展模块的编译。这两个函数也只是对setuptools的简单封装。
+
+
+在编译库文件时，setuptools默认会编译打包以下文件：
+- 由 py_modules 或 packages 指定的源文件
+- 所有由 ext_modules 或 libraries 指定的 C 源码文件
+- 由 scripts 指定的脚本文件
+- 类似于 test/test*.py 的文件
+- README.txt 或 README，setup.py，setup.cfg
+- 所有 package_data 或 data_files 指定的文件
+
+
 从上面的代码中可以看到，最主要的两个Extension是torch._C，
 
 
