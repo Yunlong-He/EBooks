@@ -7,7 +7,7 @@
 - 代码生成过程
 - 生成的二进制包
 
-## 编译PyTorch
+## 环境准备
 
 大多数情况下我们只需要安装PyTorch的二进制版本即可，即可进行普通的模型开发训练了，但如果要深入了解PyTorch的实现原理，或者对PyTorch做一些优化改进，需要从PyTorch的源码开始进行编译安装，在PyTorch的官网里有从源码安装的说明。
 
@@ -18,6 +18,78 @@ Python的环境我也根据建议安装了Anaconda，一方面Anaconda会自动�
 如果我们需要编译支持GPU的PyTorch，需要安装cuda、cudnn，其中cuda建议安装10.2以上，cuDNN建议v7以上版本。
 
 另外，为了不影响本机环境，建议基于容器环境进行编译。
+
+### 本机环境准备
+
+笔者的开发环境是在一台比较老的PC机上，主机操作系统是Ubuntu18.04，配置了GPU卡GTX1660Ti。如果读者记不清自己的GPU型号，可以先通过lspci命令查看GPU：
+```Bash
+lspci |grep VGA
+01:00.0 VGA compatible controller: NVIDIA Corporation Device 2182 (rev a1)
+```
+如果输出中没有GPU型号，如上面的输出，可以在以下网站查询得到：
+http://pci-ids.ucw.cz/read/PC/10de/2182
+
+在确定GPU卡型号之后，可以在NVIDIA的网站上查找对应的驱动，网址为：
+https://www.nvidia.com/Download/index.aspx?lang=en-us。
+比如笔者的1660Ti的驱动信息如下：
+> 
+> Linux x64 (AMD64/EM64T) Display Driver
+>  
+> Version: 	515.76
+> Release Date: 	2022.9.20
+> Operating System: 	Linux 64-bit
+> Language: 	English (US)
+> File Size: 	347.96 MB
+> 
+
+下载对应的驱动之后，安装即可。一般的电脑都有核心网卡，在安装的过程中可以考虑将核心显卡用于显示，独立显卡配置成只用做计算。
+
+如果是在主机环境编译，需要安装CUDA和Cudnn，根据NVIDIA官网的提示进行安装即可。
+
+如果使用容器环境进行编译，本机还需要安装nvidia-container-runtime。
+```Bash
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+echo $distribution
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+#wget https://nvidia.github.io/nvidia-container-runtime/ubuntu14.04/amd64/./nvidia-container-runtime-hook_1.4.0-1_amd64.deb
+sudo apt-get -y update
+sudo apt-get install -y nvidia-container-toolkit
+sudo apt-get install -y nvidia-container-runtime
+sudo systemctl restart docker
+```
+
+之后需要安装docker，并将当前用户加入到docker的用户组里。
+```Bash
+$ apt install docker.io
+$ groupadd docker
+$ usermod -ag docker <user>
+```
+
+在主机环境准备好后，我们开始准备基于ubuntu18.04的开放编译环境。
+
+为了简便起见，建议直接使用NVIDIA预先准备好的容器环境，从这里可以找到对应本机操作系统和CUDA版本的容器：
+https://hub.docker.com/r/nvidia/cuda。
+
+比如笔者所使用的环境是Ubuntu18.04+CUDA11.7，因此应该使用的容器环境是：nvidia/cuda:11.7.0-cudnn8-devel-ubuntu18.04
+
+启动容器的命令如下，读者朋友也可以根据需要加上其他的参数。笔者已经克隆了PyTorch的源码，放在${HOME}/workspace/lab下，在启动的时候挂载这个目录。
+
+```Bash
+docker run -it --rm -v ${HOME}/workspace/lab:/lab --gpus all nvidia/cuda:11.7.0-cudnn8-devel-ubuntu18.04 /bin/bash
+```
+
+另外，笔者编译PyTorch的时候，选择的是1.12.1的Tag，在编译的时候，要求cmake的版本高于3.13.0，而该容器自带的cmake是3.10.2，因此需要升级cmake。
+
+从官网上下载cmake源代码，https://cmake.org/download/。解压后运行如下命令即可安装：
+```Bash
+$ apt remove cmake
+$ apt install libssl-dev
+$ cd cmake-3.24.2
+$ ./configure
+$ make
+$ make install
+```
 
 ## 编译步骤
 
@@ -34,6 +106,50 @@ python setup.py build
 如果没有什么问题，编译的最后输出如下：
 
 ```bash
+
+-- Build files have been written to: /lab/tmp/pytorch/build
+[1/4] Generating ATen declarations_yaml
+[2/4] Generating ATen headers
+[3/4] Generating ATen sources
+
+[1/6244] Building CXX object third_party/protobuf/cmake/CMakeFiles/libprotobuf-lite.dir/__/src/google/protobuf/arena.cc.o
+[2/6244] Building CXX object third_party/protobuf/cmake/CMakeFiles/libprotobuf-lite.dir/__/src/google/protobuf/generated_enum_util.cc.o
+
+[192/6244] Linking C static library lib/libpthreadpool.a
+
+[238/6244] Linking C static library lib/libclog.a
+[239/6244] Linking C static library lib/libcpuinfo_internals.a
+[240/6244] Linking C static library lib/libcpuinfo.a
+
+[244/6244] Linking CXX static library lib/libprotobufd.a
+[264/6244] Linking CXX static library lib/libprotocd.a
+[283/6244] Linking C static library lib/libqnnpack.a
+
+[320/6244] Linking CXX executable bin/protoc-3.13.0.0
+[321/6244] Creating executable symlink bin/protoc
+[344/6244] Linking CXX static library lib/libpytorch_qnnpack.a
+[352/6244] Linking C static library lib/libnnpack_reference_layers.a
+[473/6244] Generating src/x86_64-fma/2d-fourier-8x8.py.o
+[935/6244] Generating src/x86_64-fma/2d-fourier-16x16.py.o
+[1004/6244] Generating src/x86_64-fma/2d-winograd-8x8-3x3.py.o
+[1019/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/qu8-gemm/gen/3x2-minmax-fp32-scalar-imagic.c.o
+[1020/6244] Generating src/x86_64-fma/blas/s8gemm.py.o
+[1045/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/qu8-igemm/gen/3x2-minmax-fp32-scalar-lrintf.c.o
+[1046/6244] Generating src/x86_64-fma/blas/c8gemm.py.o
+[1084/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/u8-maxpool/9p8x-minmax-scalar-c1.c.o
+[1085/6244] Generating src/x86_64-fma/blas/s4c6gemm.py.o
+[1136/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/x32-unpool/scalar.c.o
+[1137/6244] Generating src/x86_64-fma/blas/sgemm.py.o
+[1151/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/x64-transpose/gen/4x2-scalar-int.c.o
+[1152/6244] Generating src/x86_64-fma/max-pooling.py.o
+[1158/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/f32-conv-hwc2chw/3x3s2p1c3x4-sse-2x2.c.o
+[1159/6244] Generating src/x86_64-fma/relu.py.o
+[1190/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/f32-dwconv2d-chw/gen/3x3s2p1-minmax-sse-3x4.c.o
+[1191/6244] Generating src/x86_64-fma/softmax.py.o
+[1208/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/f32-dwconv2d-chw/gen/5x5s2p2-minmax-sse-1x4-acc4.c.o
+[1209/6244] Generating src/x86_64-fma/blas/sdotxf.py.o
+
+
 ......
 
 building 'torch._C' extension
