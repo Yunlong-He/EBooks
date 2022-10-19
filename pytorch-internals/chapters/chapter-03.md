@@ -91,14 +91,30 @@ $ make
 $ make install
 ```
 
+根据PyTorch README中的说明，需要在conda中安装多个依赖包：
+```Bash
+$ conda install astunparse numpy ninja pyyaml setuptools cmake cffi typing_extensions future six requests dataclasses
+$ conda install mkl mkl-include
+```
+
 ## 编译步骤
+
+```Bash
+$ git clone --recursive https://github.com/pytorch/pytorch
+$ cd pytorch
+# if you are updating an existing checkout
+$ git submodule sync
+$ git submodule update --init --recursive --jobs 0
+$ git submodule update --init --recursive
+
+```
 
 启动容器，挂载PyTorch源码所在的目录，然后启动编译命令：
 
 ```Bash
 #YL  如果需要编译DEBUG版本，可以设置环境变量DEBUG=1，setup_helpers/env.py中，会识别这个环境变量，并在编译选项中加上‘-O0 -g'的选项。
 python setup.py clean
-python setup.py build
+CMAKE_BUILD_PARALLEL_LEVEL=4 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build.log
 ```
 
 在编译启动后，会创建build目录，之后所有的编译工作都在这个目录下完成。
@@ -311,7 +327,12 @@ PyTorch使用的是自定义的编译方法，指定了wheel_concatenate和build
 - 所有 package_data 或 data_files 指定的文件
 
 
-从上面的代码中可以看到，最主要的两个Extension是torch._C，
+从上面的代码中可以看到，最主要的两个Extension是torch._C
+
+### 基于cmake的编译体系
+
+参考https://blog.csdn.net/HaoBBNuanMM/article/details/115720457
+
 
 
 ## PyTorch 动态代码生成
@@ -473,4 +494,5 @@ PyTorch的编译由setup.py发起，但真正执行编译时，相关的命令�
 <li> Pytorch setup.py 详解 https://blog.csdn.net/Sky_FULLl/article/details/125652654</li>
 <li> PyTorch 动态代码生成 https://zhuanlan.zhihu.com/p/55966063</li>
 <li> PyTorch 动态代码生成 https://zhuanlan.zhihu.com/p/59425970</li>
+<li>https://blog.csdn.net/HaoBBNuanMM/article/details/115720457</li>
 </ol>
