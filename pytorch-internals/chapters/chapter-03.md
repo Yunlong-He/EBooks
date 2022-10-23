@@ -114,7 +114,7 @@ $ git submodule update --init --recursive
 ```Bash
 #YL  如果需要编译DEBUG版本，可以设置环境变量DEBUG=1，setup_helpers/env.py中，会识别这个环境变量，并在编译选项中加上‘-O0 -g'的选项。
 python setup.py clean
-CMAKE_BUILD_PARALLEL_LEVEL=4 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build.log
+CMAKE_BUILD_PARALLEL_LEVEL=2 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build.log
 ```
 
 在编译启动后，会创建build目录，之后所有的编译工作都在这个目录下完成。
@@ -333,7 +333,107 @@ PyTorch使用的是自定义的编译方法，指定了wheel_concatenate和build
 
 参考https://blog.csdn.net/HaoBBNuanMM/article/details/115720457
 
+在build_ext()函数中，调用了Caffe2的编译，并且是在pytorch目录下开始编译的。
 
+```cmake
+#harry: CMakeLists.txt
+
+project(Torch CXX C)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# 参考 https://zhuanlan.zhihu.com/p/128519905
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+
+# ---[ Options.
+# Note to developers: if you add an option below, make sure you also add it to
+# cmake/Summary.cmake so that the summary prints out the option values.
+include(CMakeDependentOption)
+
+#harry:  setting some options here
+
+# ---[ Utils
+include(cmake/public/utils.cmake)
+
+# ---[ Misc checks to cope with various compiler modes
+include(cmake/MiscCheck.cmake)
+
+# External projects
+include(ExternalProject)
+
+include(cmake/Dependencies.cmake)
+
+# ---[ Allowlist file if allowlist is specified
+include(cmake/Allowlist.cmake)
+
+#harry: 
+# Use ld.gold if available, fall back to ld.bfd (the default ld) if not
+  if(USE_GOLD_LINKER)
+    if(USE_DISTRIBUTED AND USE_MPI)
+      # Same issue as here with default MPI on Ubuntu
+      # https://bugs.launchpad.net/ubuntu/+source/deal.ii/+bug/1841577
+      message(WARNING "Refusing to use gold when USE_MPI=1")
+    else()
+      execute_process(
+        COMMAND
+        "${CMAKE_C_COMPILER}" -fuse-ld=gold -Wl,--version
+         ERROR_QUIET
+         OUTPUT_VARIABLE LD_VERSION)
+      if(NOT "${LD_VERSION}" MATCHES "GNU gold")
+        message(WARNING "USE_GOLD_LINKER was set but ld.gold isn't available, turning it off")
+        set(USE_GOLD_LINKER OFF)
+      else()
+        message(STATUS "ld.gold is available, using it to link")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=gold")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=gold")
+        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -fuse-ld=gold")
+      endif()
+    endif()
+  endif()
+
+# Prefix path to Caffe2 headers.
+# If a directory containing installed Caffe2 headers was inadvertently
+# added to the list of include directories, prefixing
+# PROJECT_SOURCE_DIR means this source tree always takes precedence.
+include_directories(BEFORE ${PROJECT_SOURCE_DIR})
+
+# Prefix path to generated Caffe2 headers.
+# These need to take precedence over their empty counterparts located
+# in PROJECT_SOURCE_DIR.
+include_directories(BEFORE ${PROJECT_BINARY_DIR})
+
+include_directories(BEFORE ${PROJECT_SOURCE_DIR}/aten/src/)
+include_directories(BEFORE ${PROJECT_BINARY_DIR}/aten/src/)
+
+# ---[ Main build
+add_subdirectory(c10)
+add_subdirectory(caffe2)
+
+
+# ---[ Modules
+# If master flag for buildling Caffe2 is disabled, we also disable the
+# build for Caffe2 related operator modules.
+if(BUILD_CAFFE2)
+  add_subdirectory(modules)
+endif()
+
+# ---[ Binaries
+# Binaries will be built after the Caffe2 main libraries and the modules
+# are built. For the binaries, they will be linked to the Caffe2 main
+# libraries, as well as all the modules that are built with Caffe2 (the ones
+# built in the previous Modules section above).
+if(BUILD_BINARY)
+  add_subdirectory(binaries)
+endif()
+
+include(cmake/Summary.cmake)
+caffe2_print_configuration_summary()
+
+# ---[ Torch Deploy
+if(USE_DEPLOY)
+  add_subdirectory(torch/csrc/deploy)
+endif()
+```
 
 ## PyTorch 动态代码生成
 

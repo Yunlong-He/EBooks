@@ -87,6 +87,7 @@ for epoch in range(start_epoch, start_epoch+200):
 在多进程的情况下，最耗费时间的Fetcher部分和pin_memory()部分改成了多进程，如下图：
 <img src='../images/3.png'>
 
+<img src='../images/dataloader.png'/>
 
 
 ```Python
@@ -114,6 +115,110 @@ class DataLoader(Generic[T_co]):
 
 
 ```
+
+我们在训练模型的时候，一般是把DataLoader当作迭代器来使用，缺省情况下DataLoader只使用一个进程来读取数据，所返回的迭代器
+称为_SingleProcessDataLoaderIter，但是当计算速度比较快，比如使用GPU或者多卡进行训练时，为了加快数据加载的速度，我们可
+以设置DataLoader使用多进程进行读取，此时DataLoader返回的迭代器称为_MultiProcessingDataLoaderIter。由于要协调进程间
+数据的读取，其实现略微复杂一些。
+
+```Python
+# torch/utils/data/dataloader.py
+
+class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
+    def __init__(self, loader):
+        super(_MultiProcessingDataLoaderIter, self).__init__(loader)
+
+        assert self._num_workers > 0
+        assert self._prefetch_factor > 0
+
+        if loader.multiprocessing_context is None:
+            multiprocessing_context = multiprocessing
+        else:
+            multiprocessing_context = loader.multiprocessing_context
+
+        self._worker_init_fn = loader.worker_init_fn
+        # No certainty which module multiprocessing_context is
+        self._worker_result_queue = multiprocessing_context.Queue()  # type: ignore[var-annotated]
+        self._worker_pids_set = False
+        self._shutdown = False
+        self._workers_done_event = multiprocessing_context.Event()
+
+        self._index_queues = []
+        self._workers = []
+        for i in range(self._num_workers):
+            # No certainty which module multiprocessing_context is
+            index_queue = multiprocessing_context.Queue()  # type: ignore[var-annotated]
+            # Need to `cancel_join_thread` here!
+            # See sections (2) and (3b) above.
+            index_queue.cancel_join_thread()
+            w = multiprocessing_context.Process(
+                target=_utils.worker._worker_loop,
+                args=(self._dataset_kind, self._dataset, index_queue,
+                      self._worker_result_queue, self._workers_done_event,
+                      self._auto_collation, self._collate_fn, self._drop_last,
+                      self._base_seed, self._worker_init_fn, i, self._num_workers,
+                      self._persistent_workers, self._shared_seed))
+            w.daemon = True
+            # NB: Process.start() actually take some time as it needs to
+            #     start a process and pass the arguments over via a pipe.
+            #     Therefore, we only add a worker to self._workers list after
+            #     it started, so that we do not call .join() if program dies
+            #     before it starts, and __del__ tries to join but will get:
+            #     AssertionError: can only join a started process.
+            w.start()
+            self._index_queues.append(index_queue)
+            self._workers.append(w)
+
+        if self._pin_memory:
+            self._pin_memory_thread_done_event = threading.Event()
+
+            # Queue is not type-annotated
+            self._data_queue = queue.Queue()  # type: ignore[var-annotated]
+            pin_memory_thread = threading.Thread(
+                target=_utils.pin_memory._pin_memory_loop,
+                args=(self._worker_result_queue, self._data_queue,
+                      torch.cuda.current_device(),
+                      self._pin_memory_thread_done_event, self._pin_memory_device))
+            pin_memory_thread.daemon = True
+            pin_memory_thread.start()
+            # Similar to workers (see comment above), we only register
+            # pin_memory_thread once it is started.
+            self._pin_memory_thread = pin_memory_thread
+        else:
+            self._data_queue = self._worker_result_queue
+
+        # In some rare cases, persistent workers (daemonic processes)
+        # would be terminated before `__del__` of iterator is invoked
+        # when main process exits
+        # It would cause failure when pin_memory_thread tries to read
+        # corrupted data from worker_result_queue
+        # atexit is used to shutdown thread and child processes in the
+        # right sequence before main process exits
+        if self._persistent_workers and self._pin_memory:
+            import atexit
+            for w in self._workers:
+                atexit.register(_MultiProcessingDataLoaderIter._clean_up_worker, w)
+
+        # .pid can be None only before process is spawned (not the case, so ignore)
+        _utils.signal_handling._set_worker_pids(id(self), tuple(w.pid for w in self._workers))  # type: ignore[misc]
+        _utils.signal_handling._set_SIGCHLD_handler()
+        self._worker_pids_set = True
+        self._reset(loader, first_iter=True)
+
+```
+
+在_MultiProcessingDataLoaderIter初始化的时候，就会同python multiprocessing库创建多个子进程，每个子进程都在执行_worker_loop()函数。
+
+
+在多进程中环境中，不能使用Python标准库中的Queue。需要使用进程安全的multiprocessing.Queue，和其他语言的多进程队列类似，multiprocessing.Queue提供可能阻塞的get方法，以及不会阻塞的get_nowait()方法。在队列为空的时和，get_nowait()方法会抛一个Empty异常。
+
+
+————————————————
+版权声明：本文为CSDN博主「SQZHAO」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+原文链接：https://blog.csdn.net/sqzhao/article/details/120732881
+
+
+
 ### 设计原则1. DataLoader -> Dataset
 
 
