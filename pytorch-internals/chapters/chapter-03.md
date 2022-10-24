@@ -335,6 +335,72 @@ PyTorch使用的是自定义的编译方法，指定了wheel_concatenate和build
 
 在build_ext()函数中，调用了Caffe2的编译，并且是在pytorch目录下开始编译的。
 
+首先，打开开关CMAKE_EXPORT_COMPILE_COMMANDS，这样可以将所有的编译命令输出到一个文件里，我们可以在编译后或者编译过程中查看，了解编译的细节。
+
+```cmake
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+```
+
+之后设置优先使用CMake中的pthread库，据说libstdc++封装pthread库后，如果以dlopen的方式使用会导致空指针错误，使用CMake的pthread库可以避免这个问题。参考 https://zhuanlan.zhihu.com/p/128519905
+
+```cmake
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+```
+之后是一些编译的配置，内容比较多，下面列出了一些主要的配置项。其中有很多配置项使用宏cmake_dependent_option来定义，例如：
+```cmake
+cmake_dependent_option(
+    USE_CUDNN "Use cuDNN" ON
+    "USE_CUDA" OFF)
+```c
+代表当开启USE_CUDA的时候，也开启USE_CUDNN，否则关闭USE_CUDNN。
+
+```cmake
+# ---[ Options.
+# Note to developers: if you add an option below, make sure you also add it to
+# cmake/Summary.cmake so that the summary prints out the option values.
+include(CMakeDependentOption)
+option(BUILD_BINARY "Build C++ binaries" OFF)
+option(BUILD_PYTHON "Build Python binaries" ON)
+option(BUILD_CAFFE2 "Master flag to build Caffe2" OFF)
+cmake_dependent_option(
+    BUILD_CAFFE2_OPS "Build Caffe2 operators" ON
+    "BUILD_CAFFE2" OFF)
+option(BUILD_SHARED_LIBS "Build libcaffe2.so" ON)
+option(USE_CUDA "Use CUDA" ON)
+cmake_dependent_option(
+    USE_CUDNN "Use cuDNN" ON
+    "USE_CUDA" OFF)
+cmake_dependent_option(
+    USE_NCCL "Use NCCL" ON
+    "USE_CUDA OR USE_ROCM;UNIX;NOT APPLE" OFF)
+option(USE_TENSORRT "Using Nvidia TensorRT library" OFF)
+
+# Ensure that an MKLDNN build is the default for x86 CPUs
+# but optional for AArch64 (dependent on -DUSE_MKLDNN).
+cmake_dependent_option(
+  USE_MKLDNN "Use MKLDNN. Only available on x86, x86_64, and AArch64." "${CPU_INTEL}"
+  "CPU_INTEL OR CPU_AARCH64" OFF)
+
+option(USE_DISTRIBUTED "Use distributed" ON)
+cmake_dependent_option(
+    USE_MPI "Use MPI for Caffe2. Only available if USE_DISTRIBUTED is on." ON
+    "USE_DISTRIBUTED" OFF)
+cmake_dependent_option(
+    USE_GLOO "Use Gloo. Only available if USE_DISTRIBUTED is on." ON
+    "USE_DISTRIBUTED" OFF)
+```
+
+PyTorch对ONNX的支持有两种方式，如果已有ONNX库，可以配置使用系统的自带的ONNX，否则重新编译生成。
+```cmake
+if(NOT USE_SYSTEM_ONNX)
+  set(ONNX_NAMESPACE "onnx_torch" CACHE STRING "A namespace for ONNX; needed to build with other frameworks that share ONNX.")
+else()
+  set(ONNX_NAMESPACE "onnx" CACHE STRING "A namespace for ONNX; needed to build with other frameworks that share ONNX.")
+endif()
+
+```
+
+
 ```cmake
 #harry: CMakeLists.txt
 
@@ -342,7 +408,7 @@ project(Torch CXX C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# 参考 https://zhuanlan.zhihu.com/p/128519905
+# 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 
 # ---[ Options.
