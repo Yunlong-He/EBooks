@@ -114,7 +114,7 @@ $ git submodule update --init --recursive
 ```Bash
 #YL  如果需要编译DEBUG版本，可以设置环境变量DEBUG=1，setup_helpers/env.py中，会识别这个环境变量，并在编译选项中加上‘-O0 -g'的选项。
 python setup.py clean
-CMAKE_BUILD_PARALLEL_LEVEL=2 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build.log
+CMAKE_BUILD_PARALLEL_LEVEL=2 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build_test.log
 ```
 
 在编译启动后，会创建build目录，之后所有的编译工作都在这个目录下完成。
@@ -124,62 +124,86 @@ CMAKE_BUILD_PARALLEL_LEVEL=2 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee 
 ```bash
 
 -- Build files have been written to: /lab/tmp/pytorch/build
-[1/4] Generating ATen declarations_yaml
-[2/4] Generating ATen headers
-[3/4] Generating ATen sources
 
-[1/6244] Building CXX object third_party/protobuf/cmake/CMakeFiles/libprotobuf-lite.dir/__/src/google/protobuf/arena.cc.o
-[2/6244] Building CXX object third_party/protobuf/cmake/CMakeFiles/libprotobuf-lite.dir/__/src/google/protobuf/generated_enum_util.cc.o
-
-[192/6244] Linking C static library lib/libpthreadpool.a
-
-[238/6244] Linking C static library lib/libclog.a
-[239/6244] Linking C static library lib/libcpuinfo_internals.a
-[240/6244] Linking C static library lib/libcpuinfo.a
-
-[244/6244] Linking CXX static library lib/libprotobufd.a
-[264/6244] Linking CXX static library lib/libprotocd.a
-[283/6244] Linking C static library lib/libqnnpack.a
-
-[320/6244] Linking CXX executable bin/protoc-3.13.0.0
-[321/6244] Creating executable symlink bin/protoc
-[344/6244] Linking CXX static library lib/libpytorch_qnnpack.a
-[352/6244] Linking C static library lib/libnnpack_reference_layers.a
-[473/6244] Generating src/x86_64-fma/2d-fourier-8x8.py.o
-[935/6244] Generating src/x86_64-fma/2d-fourier-16x16.py.o
-[1004/6244] Generating src/x86_64-fma/2d-winograd-8x8-3x3.py.o
-[1019/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/qu8-gemm/gen/3x2-minmax-fp32-scalar-imagic.c.o
-[1020/6244] Generating src/x86_64-fma/blas/s8gemm.py.o
-[1045/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/qu8-igemm/gen/3x2-minmax-fp32-scalar-lrintf.c.o
-[1046/6244] Generating src/x86_64-fma/blas/c8gemm.py.o
-[1084/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/u8-maxpool/9p8x-minmax-scalar-c1.c.o
-[1085/6244] Generating src/x86_64-fma/blas/s4c6gemm.py.o
-[1136/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/x32-unpool/scalar.c.o
-[1137/6244] Generating src/x86_64-fma/blas/sgemm.py.o
-[1151/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/x64-transpose/gen/4x2-scalar-int.c.o
-[1152/6244] Generating src/x86_64-fma/max-pooling.py.o
-[1158/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/f32-conv-hwc2chw/3x3s2p1c3x4-sse-2x2.c.o
-[1159/6244] Generating src/x86_64-fma/relu.py.o
-[1190/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/f32-dwconv2d-chw/gen/3x3s2p1-minmax-sse-3x4.c.o
 [1191/6244] Generating src/x86_64-fma/softmax.py.o
 [1208/6244] Building C object confu-deps/XNNPACK/CMakeFiles/all_microkernels.dir/src/f32-dwconv2d-chw/gen/5x5s2p2-minmax-sse-1x4-acc4.c.o
 [1209/6244] Generating src/x86_64-fma/blas/sdotxf.py.o
 
-
 ......
 
+[  0%] Linking C static library ../../../../lib/libclog.a
+[  0%] Linking C static library ../../lib/libpthreadpool.a
+[  1%] Linking CXX static library ../../../lib/libgtestd.a
+[  2%] Linking C static library ../../../lib/libtensorpipe_uv.a
+[  4%] Linking CXX static library ../../../lib/libprotobuf-lited.a
+[  4%] Linking CXX static library ../../../lib/libbenchmark.a
+[  4%] Linking CXX static library ../../../lib/libgloo.a
+[  4%] Linking CXX static library ../../../lib/libasmjit.a
+[  6%] Linking CXX static library ../../lib/libfmtd.a
+[  7%] Linking CXX static library ../../../lib/libprotobufd.a
+[  9%] Linking CXX shared library ../lib/libcaffe2_nvrtc.so
+[  9%] Linking CXX shared library ../lib/libc10.so
+[  9%] Linking C static library ../../lib/libfoxi_loader.a
+[  9%] Linking C executable ../../bin/mkrename
+[  9%] Linking C executable ../../bin/mkalias
+[ 11%] Linking C executable ../../bin/mkdisp
+[ 11%] Linking C shared library ../lib/libtorch_global_deps.so
+[ 11%] Linking C executable ../../bin/mkrename_gnuabi
+[ 11%] Linking C executable ../../bin/mkmasked_gnuabi
+[ 11%] Linking C executable ../../bin/addSuffix
+[ 13%] Linking C static library ../../lib/libcpuinfo.a
+[ 15%] Linking C static library ../../lib/libcpuinfo_internals.a
+[ 16%] Linking C static library ../../lib/libqnnpack.a
+[ 16%] Linking C static library ../../lib/libnnpack_reference_layers.a
+[ 18%] Linking CXX static library ../../lib/libpytorch_qnnpack.a
+[ 23%] Linking CXX static library ../../../lib/libprotocd.a
+[ 23%] Linking CXX static library ../../../lib/libbenchmark_main.a
+[ 24%] Linking CXX static library ../../../lib/libgtest_maind.a
+[ 24%] Linking CXX static library ../../../lib/libgmockd.a
+[ 26%] Linking C static library ../../lib/libnnpack.a
+[ 26%] Linking CXX static library ../../../../../../lib/libdnnl.a
+[ 38%] Linking CXX static library ../../lib/libXNNPACK.a
+[ 45%] Linking CXX static library ../../../lib/libtensorpipe.a
+[ 50%] Linking CXX executable ../../bin/c10_intrusive_ptr_benchmark
+[ 51%] Linking CXX shared library ../../lib/libc10_cuda.so
+[ 54%] Linking CXX executable ../../../bin/protoc
+[ 54%] Linking CXX static library ../../../lib/libkineto.a
+[ 54%] Linking CXX static library ../../../../lib/libdnnl_graph.a
+[ 54%] Linking CXX static library ../../../lib/libgmock_maind.a
+[ 56%] Linking C static library ../../lib/libsleef.a
+[ 57%] Linking CXX static library ../../../lib/libtensorpipe_cuda.a
+[ 63%] Linking CXX static library ../../lib/libonnx_proto.a
+[ 64%] Linking CXX static library ../lib/libcaffe2_protos.a
+[ 70%] Linking CXX static library ../../lib/libonnx.a
+[ 74%] Linking CXX static library ../../lib/libfbgemm.a
+[ 74%] Linking CXX executable ../bin/vec_test_all_types_AVX2
+[ 74%] Linking CXX executable ../bin/vec_test_all_types_DEFAULT
+[ 88%] Linking CXX shared library ../lib/libtorch_cpu.so
+Linking    libnccl.so.2.10.3                   > /lab/pytorch-build/pytorch/build/nccl/lib/libnccl.so.2.10.3
+[ 88%] Linking CXX static library ../../../lib/libgloo_cuda.a
+[ 93%] Linking CXX shared library ../lib/libtorch_cuda.so
+[ 93%] Linking CXX shared library ../lib/libtorch.so
+[ 93%] Linking CXX shared library ../lib/libtorch_cuda_linalg.so
+[ 93%] Linking CXX executable ../bin/example_allreduce
+[ 93%] Linking CXX executable ../bin/basic
+[ 93%] Linking CXX executable ../bin/atest
+[ 94%] Linking CXX executable ../bin/test_parallel
+[ 94%] Linking CXX executable ../bin/verify_api_visibility
+[ 94%] Linking CXX executable ../bin/mobile_memory_cleanup
+[ 94%] Linking CXX shared library ../lib/libbackend_with_compiler.so
+[ 94%] Linking CXX executable ../bin/tutorial_tensorexpr
+[ 94%] Linking CXX shared library ../../../../lib/libshm.so
+[ 94%] Linking CXX executable ../bin/parallel_benchmark
+[ 95%] Linking CXX executable ../../../../bin/torch_shm_manager
+[ 98%] Linking CXX executable ../bin/nvfuser_bench
+[100%] Linking CXX shared library ../../lib/libtorch_python.so
+[100%] Linking CXX shared library ../../lib/libnnapi_backend.so
 building 'torch._C' extension
-creating build/temp.linux-x86_64-3.7
-creating build/temp.linux-x86_64-3.7/torch
-creating build/temp.linux-x86_64-3.7/torch/csrc
-gcc -pthread -B /root/anaconda3/compiler_compat -Wl,--sysroot=/ -Wsign-compare -DNDEBUG -g -fwrapv -O3 -Wall -Wstrict-prototypes -fPIC -I/root/anaconda3/include/python3.7m -c torch/csrc/stub.c -o build/temp.linux-x86_64-3.7/torch/csrc/stub.o -Wall -Wextra -Wno-strict-overflow -Wno-unused-parameter -Wno-missing-field-initializers -Wno-write-strings -Wno-unknown-pragmas -Wno-deprecated-declarations -fno-strict-aliasing -Wno-missing-braces
-gcc -pthread -shared -B /root/anaconda3/compiler_compat -L/root/anaconda3/lib -Wl,-rpath=/root/anaconda3/lib -Wl,--no-as-needed -Wl,--sysroot=/ build/temp.linux-x86_64-3.7/torch/csrc/stub.o -L/lab/tmp/pytorch/torch/lib -ltorch_python -o build/lib.linux-x86_64-3.7/torch/_C.cpython-37m-x86_64-linux-gnu.so -Wl,-rpath,$ORIGIN/lib
+
 building 'torch._C_flatbuffer' extension
-gcc -pthread -B /root/anaconda3/compiler_compat -Wl,--sysroot=/ -Wsign-compare -DNDEBUG -g -fwrapv -O3 -Wall -Wstrict-prototypes -fPIC -I/root/anaconda3/include/python3.7m -c torch/csrc/stub_with_flatbuffer.c -o build/temp.linux-x86_64-3.7/torch/csrc/stub_with_flatbuffer.o -Wall -Wextra -Wno-strict-overflow -Wno-unused-parameter -Wno-missing-field-initializers -Wno-write-strings -Wno-unknown-pragmas -Wno-deprecated-declarations -fno-strict-aliasing -Wno-missing-braces
-gcc -pthread -shared -B /root/anaconda3/compiler_compat -L/root/anaconda3/lib -Wl,-rpath=/root/anaconda3/lib -Wl,--no-as-needed -Wl,--sysroot=/ build/temp.linux-x86_64-3.7/torch/csrc/stub_with_flatbuffer.o -L/lab/tmp/pytorch/torch/lib -ltorch_python -o build/lib.linux-x86_64-3.7/torch/_C_flatbuffer.cpython-37m-x86_64-linux-gnu.so -Wl,-rpath,$ORIGIN/lib
+
 building 'torch._dl' extension
-gcc -pthread -B /root/anaconda3/compiler_compat -Wl,--sysroot=/ -Wsign-compare -DNDEBUG -g -fwrapv -O3 -Wall -Wstrict-prototypes -fPIC -I/root/anaconda3/include/python3.7m -c torch/csrc/dl.c -o build/temp.linux-x86_64-3.7/torch/csrc/dl.o
-gcc -pthread -shared -B /root/anaconda3/compiler_compat -L/root/anaconda3/lib -Wl,-rpath=/root/anaconda3/lib -Wl,--no-as-needed -Wl,--sysroot=/ build/temp.linux-x86_64-3.7/torch/csrc/dl.o -o build/lib.linux-x86_64-3.7/torch/_dl.cpython-37m-x86_64-linux-gnu.so
+
 -------------------------------------------------------------------------
 |                                                                       |
 |    It is no longer necessary to use the 'build' or 'rebuild' targets  |
@@ -400,26 +424,95 @@ endif()
 
 ```
 
+接下来引用utils.cmake，这个文件里包括了很多工具函数，用于后边编译过程中的一些处理。
 
 ```cmake
-#harry: CMakeLists.txt
-
-project(Torch CXX C)
-
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# 
-set(THREADS_PREFER_PTHREAD_FLAG ON)
-
-# ---[ Options.
-# Note to developers: if you add an option below, make sure you also add it to
-# cmake/Summary.cmake so that the summary prints out the option values.
-include(CMakeDependentOption)
-
-#harry:  setting some options here
-
 # ---[ Utils
 include(cmake/public/utils.cmake)
+```
+
+之后是一些版本号的设置，不再赘述。
+
+这里设置了cmake的modules查找路径，以及编译输出的路径
+```cmake
+# ---[ CMake scripts + modules
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
+
+# ---[ CMake build directories
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+```
+
+在编译的过程中，产生了下面这些动态库：
+```Bash
+[  2%] Linking C static library ../../../lib/libtensorpipe_uv.a
+[  9%] Linking CXX shared library ../lib/libcaffe2_nvrtc.so
+[  9%] Linking CXX shared library ../lib/libc10.so
+[ 11%] Linking C shared library ../lib/libtorch_global_deps.so
+[ 45%] Linking CXX static library ../../../lib/libtensorpipe.a
+[ 51%] Linking CXX shared library ../../lib/libc10_cuda.so
+[ 57%] Linking CXX static library ../../../lib/libtensorpipe_cuda.a
+[ 88%] Linking CXX shared library ../lib/libtorch_cpu.so
+Linking    libnccl.so.2.10.3                   > /lab/pytorch-build/pytorch/build/nccl/lib/libnccl.so.2.10.3
+[ 93%] Linking CXX shared library ../lib/libtorch_cuda.so
+[ 93%] Linking CXX shared library ../lib/libtorch.so
+[ 93%] Linking CXX shared library ../lib/libc10d_cuda_test.so
+[ 93%] Linking CXX shared library ../lib/libtorch_cuda_linalg.so
+[ 93%] Linking CXX executable ../bin/NamedTensor_test
+[ 94%] Linking CXX executable ../bin/scalar_tensor_test
+[ 94%] Linking CXX executable ../bin/undefined_tensor_test
+[ 94%] Linking CXX executable ../bin/lazy_tensor_test
+[ 94%] Linking CXX executable ../bin/tensor_iterator_test
+[ 94%] Linking CXX executable ../bin/cuda_packedtensoraccessor_test
+[ 94%] Linking CXX shared library ../lib/libjitbackend_test.so
+[ 94%] Linking CXX shared library ../lib/libtorchbind_test.so
+[ 94%] Linking CXX shared library ../lib/libbackend_with_compiler.so
+[ 94%] Linking CXX executable ../bin/tutorial_tensorexpr
+[ 94%] Linking CXX shared library ../../../../lib/libshm.so
+[ 98%] Linking CXX executable ../bin/test_tensorexpr
+[100%] Linking CXX shared library ../../lib/libtorch_python.so
+[100%] Linking CXX shared library ../../lib/libnnapi_backend.so
+
+```
+
+最后，在通过cmake将必要的库编译完成以后，再执行setup.py中的编译命令，生成PyTorch所依赖的扩展：
+```Bash
+building 'torch._C' extension
+creating build/temp.linux-x86_64-3.9
+creating build/temp.linux-x86_64-3.9/torch
+creating build/temp.linux-x86_64-3.9/torch/csrc
+gcc -pthread -B /root/anaconda3/compiler_compat -Wno-unused-result -Wsign-compare -DNDEBUG -O2 -Wall -fPIC -O2 -isystem /root/anaconda3/include -I/root/anaconda3/include -fPIC -O2 -isystem /root/anaconda3/include -fPIC -I/root/anaconda3/include/python3.9 -c torch/csrc/stub.c -o build/temp.linux-x86_64-3.9/torch/csrc/stub.o -Wall -Wextra -Wno-strict-overflow -Wno-unused-parameter -Wno-missing-field-initializers -Wno-write-strings -Wno-unknown-pragmas -Wno-deprecated-declarations -fno-strict-aliasing -Wno-missing-braces -O0 -g
+gcc -pthread -B /root/anaconda3/compiler_compat -shared -Wl,-rpath,/root/anaconda3/lib -Wl,-rpath-link,/root/anaconda3/lib -L/root/anaconda3/lib -L/root/anaconda3/lib -Wl,-rpath,/root/anaconda3/lib -Wl,-rpath-link,/root/anaconda3/lib -L/root/anaconda3/lib build/temp.linux-x86_64-3.9/torch/csrc/stub.o -L/lab/pytorch-build/pytorch/torch/lib -L/usr/local/cuda/lib64/stubs -ltorch_python -o build/lib.linux-x86_64-3.9/torch/_C.cpython-39-x86_64-linux-gnu.so -O0 -g -Wl,-rpath,$ORIGIN/lib
+building 'torch._C_flatbuffer' extension
+gcc -pthread -B /root/anaconda3/compiler_compat -Wno-unused-result -Wsign-compare -DNDEBUG -O2 -Wall -fPIC -O2 -isystem /root/anaconda3/include -I/root/anaconda3/include -fPIC -O2 -isystem /root/anaconda3/include -fPIC -I/root/anaconda3/include/python3.9 -c torch/csrc/stub_with_flatbuffer.c -o build/temp.linux-x86_64-3.9/torch/csrc/stub_with_flatbuffer.o -Wall -Wextra -Wno-strict-overflow -Wno-unused-parameter -Wno-missing-field-initializers -Wno-write-strings -Wno-unknown-pragmas -Wno-deprecated-declarations -fno-strict-aliasing -Wno-missing-braces -O0 -g
+gcc -pthread -B /root/anaconda3/compiler_compat -shared -Wl,-rpath,/root/anaconda3/lib -Wl,-rpath-link,/root/anaconda3/lib -L/root/anaconda3/lib -L/root/anaconda3/lib -Wl,-rpath,/root/anaconda3/lib -Wl,-rpath-link,/root/anaconda3/lib -L/root/anaconda3/lib build/temp.linux-x86_64-3.9/torch/csrc/stub_with_flatbuffer.o -L/lab/pytorch-build/pytorch/torch/lib -L/usr/local/cuda/lib64/stubs -ltorch_python -o build/lib.linux-x86_64-3.9/torch/_C_flatbuffer.cpython-39-x86_64-linux-gnu.so -O0 -g -Wl,-rpath,$ORIGIN/lib
+building 'torch._dl' extension
+gcc -pthread -B /root/anaconda3/compiler_compat -Wno-unused-result -Wsign-compare -DNDEBUG -O2 -Wall -fPIC -O2 -isystem /root/anaconda3/include -I/root/anaconda3/include -fPIC -O2 -isystem /root/anaconda3/include -fPIC -I/root/anaconda3/include/python3.9 -c torch/csrc/dl.c -o build/temp.linux-x86_64-3.9/torch/csrc/dl.o
+gcc -pthread -B /root/anaconda3/compiler_compat -shared -Wl,-rpath,/root/anaconda3/lib -Wl,-rpath-link,/root/anaconda3/lib -L/root/anaconda3/lib -L/root/anaconda3/lib -Wl,-rpath,/root/anaconda3/lib -Wl,-rpath-link,/root/anaconda3/lib -L/root/anaconda3/lib build/temp.linux-x86_64-3.9/torch/csrc/dl.o -o build/lib.linux-x86_64-3.9/torch/_dl.cpython-39-x86_64-linux-gnu.so
+```
+
+对比着，在安装pytorch后，我们可以看到torch目录下有如下的动态库：
+```Bash
+./_dl.cpython-36m-x86_64-linux-gnu.so
+./lib/libtorch_python.so
+./lib/libcaffe2_observers.so
+./lib/libcaffe2_nvrtc.so
+./lib/libc10.so
+./lib/libc10_cuda.so
+./lib/libshm.so
+./lib/libcaffe2_detectron_ops_gpu.so
+./lib/libtorch.so
+./lib/libcaffe2_module_test_dynamic.so
+./_C.cpython-36m-x86_64-linux-gnu.so
+```
+Caffe2下有下列动态库：
+```Bash
+./python/caffe2_pybind11_state.cpython-36m-x86_64-linux-gnu.so
+./python/caffe2_pybind11_state_gpu.cpython-36m-x86_64-linux-gnu.so
+···
+
+```cmake
 
 # ---[ Misc checks to cope with various compiler modes
 include(cmake/MiscCheck.cmake)
@@ -432,30 +525,6 @@ include(cmake/Dependencies.cmake)
 # ---[ Allowlist file if allowlist is specified
 include(cmake/Allowlist.cmake)
 
-#harry: 
-# Use ld.gold if available, fall back to ld.bfd (the default ld) if not
-  if(USE_GOLD_LINKER)
-    if(USE_DISTRIBUTED AND USE_MPI)
-      # Same issue as here with default MPI on Ubuntu
-      # https://bugs.launchpad.net/ubuntu/+source/deal.ii/+bug/1841577
-      message(WARNING "Refusing to use gold when USE_MPI=1")
-    else()
-      execute_process(
-        COMMAND
-        "${CMAKE_C_COMPILER}" -fuse-ld=gold -Wl,--version
-         ERROR_QUIET
-         OUTPUT_VARIABLE LD_VERSION)
-      if(NOT "${LD_VERSION}" MATCHES "GNU gold")
-        message(WARNING "USE_GOLD_LINKER was set but ld.gold isn't available, turning it off")
-        set(USE_GOLD_LINKER OFF)
-      else()
-        message(STATUS "ld.gold is available, using it to link")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=gold")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=gold")
-        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -fuse-ld=gold")
-      endif()
-    endif()
-  endif()
 
 # Prefix path to Caffe2 headers.
 # If a directory containing installed Caffe2 headers was inadvertently
