@@ -210,14 +210,17 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
 在_MultiProcessingDataLoaderIter初始化的时候，就会同python multiprocessing库创建多个子进程，每个子进程都在执行_worker_loop()函数。
 
 
-在多进程中环境中，不能使用Python标准库中的Queue。需要使用进程安全的multiprocessing.Queue，和其他语言的多进程队列类似，multiprocessing.Queue提供可能阻塞的get方法，以及不会阻塞的get_nowait()方法。在队列为空的时和，get_nowait()方法会抛一个Empty异常。
+在多进程中环境中，不能使用Python标准库中的Queue。需要使用进程安全的multiprocessing.Queue，和其他语言的多进程队列类似，multiprocessing.Queue提供可能阻塞的get方法，以及不会阻塞的get_nowait()方法。在队列为空的时候，get_nowait()方法会抛一个Empty异常。
+
+进程安全的Queue是_MultiProcessDataLoaderIter中主进程及各个worker子进程之间传递消息的通道，包括以下几种：
+- index_queue。存放数据为(send_idx, index)，由main_thread生产，worker_1～n_process消费。其中send_idx是main_thread维护的记录任务顺序和数量的计数器，每发送一个index到index_queue中，send_idx便会加一，具体用途后续解释。
+- worker_result_queue。存放数据为(send_idx, pageble tensor)，由worker_1~n_process产生，pin_memory_thread消费。
+- data_queue。存放数据为(send_idx, pinned tensor)，由- pin_memory_thread产生，main_thread消费。
 
 
-————————————————
-版权声明：本文为CSDN博主「SQZHAO」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
-原文链接：https://blog.csdn.net/sqzhao/article/details/120732881
 
 
+—
 
 ### 设计原则1. DataLoader -> Dataset
 

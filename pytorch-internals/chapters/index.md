@@ -33,6 +33,8 @@
 - 第11章 JIT
 - 第12章 典型模型
 - 第13章 性能优化
+- 第14章 torch.fx
+- 第15张 tensorxpr和MLIR
 
 
 
