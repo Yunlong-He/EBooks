@@ -183,17 +183,236 @@ PyObject* initModule() {
 ```
 
 
-## 参考
-- https://blog.csdn.net/Xixo0628/article/details/112603174
-- https://blog.csdn.net/Xixo0628/article/details/112603174
-- https://pytorch.org/blog/a-tour-of-pytorch-internals-1/#the-thptensor-type
-
-
-# 第三章 PyTorch中重要的数据结构
 
 ## Tensor
 
-在C++中，Tensor的定义在
+在Pytorch的早期版本中，Tensor被定义在TH模块中的THTensor类中，后来TH模块被移除了，也就有了更直观的Tensor类。
+
+当前Tensor的定义在TensorBody.h中，
+
+```C++
+// torch/include/ATen/core/TensorBody.h
+
+class TORCH_API Tensor: public TensorBase {
+ public:
+  Tensor(const Tensor &tensor) = default;
+  Tensor(Tensor &&tensor) = default;
+
+  using TensorBase::size;
+  using TensorBase::stride;
+
+  Tensor cpu() const {
+    return to(options().device(DeviceType::CPU), /*non_blocking*/ false, /*copy*/ false);
+  }
+
+  // TODO: The Python version also accepts arguments
+  Tensor cuda() const {
+    return to(options().device(DeviceType::CUDA), /*non_blocking*/ false, /*copy*/ false);
+  }
+
+  void backward(const Tensor & gradient={}, ...) const {
+    ...
+  }
+}
+```
+
+我们还可以看到，Tensor类本身的实现很少，大部分功能来自于其父类TensorBase。根据文档注释我们可以了解到，这样做的初衷是为了避免修改算子签名的时候造成太多模块的重新编译，因为Tensor是一个核心数据结构，几乎所有的模块都会依赖于Tensor。
+
+```C++
+// torch/include/ATen/core/TensorBase.h
+
+class TORCH_API TensorBase {
+
+  int64_t dim() const {
+    return impl_->dim();
+  }
+  int64_t storage_offset() const {
+    return impl_->storage_offset();
+  }
+
+  // ...
+
+  bool requires_grad() const {
+    return impl_->requires_grad();
+  }
+  bool is_leaf() const;
+  TensorBase data() const;
+
+  c10::intrusive_ptr<TensorImpl, UndefinedTensorImpl> impl_;
+}
+```
+
+> https://blog.csdn.net/Chris_zhangrx/article/details/119086815
+> c10::intrusive_ptr是PyTorch的内部智能指针实现，其工作方式如下：
+> 首先完美转发所有的参数来构建 intrusive_ptr
+> 用这些参数 new 一个新的 TTarget 类型的对象
+> 用新的 TTarget 对象构造一个 intrusive_ptr
+> 构造 intrusive_ptr 的同时对 refcount_ 和 weakcount_ 都加 1，
+> 如果是默认构造，则两个引用计数都默认为 0，根据这个可以将通过 make_intrusive 构造的指针与堆栈上的会被自动析构的情况分开, 用来确保内存是我们自己分配的。
+
+以后有机会我们再研究一下intrusive_ptr的实现，在此之前，我们主要关注impl_这个成员变量，也就是TensorImpl这个类的实现。
+
+```C++
+// c10/core/TensorImpl.h
+
+struct C10_API TensorImpl : public c10::intrusive_ptr_target {
+
+TensorImpl(
+      Storage&& storage,
+      DispatchKeySet,
+      const caffe2::TypeMeta data_type);
+
+ public:
+  TensorImpl(const TensorImpl&) = delete;
+  TensorImpl& operator=(const TensorImpl&) = delete;
+  TensorImpl(TensorImpl&&) = delete;
+  TensorImpl& operator=(TensorImpl&&) = delete;
+
+  DispatchKeySet key_set() const {
+    return key_set_;
+  }
+
+  int64_t dim() const {
+    //...
+  }
+  bool is_contiguous(
+    //...
+  } 
+
+  Storage storage_;
+
+private:
+  std::unique_ptr<c10::AutogradMetaInterface> autograd_meta_ = nullptr;
+
+ protected:
+  std::unique_ptr<c10::NamedTensorMetaInterface> named_tensor_meta_ = nullptr;
+
+  c10::VariableVersion version_counter_;
+
+  std::atomic<impl::PyInterpreter*> pyobj_interpreter_;
+  PyObject* pyobj_;
+
+  c10::impl::SizesAndStrides sizes_and_strides_;
+
+  int64_t storage_offset_ = 0;
+  int64_t numel_ = 1;
+
+  caffe2::TypeMeta data_type_;
+  c10::optional<c10::Device> device_opt_;
+
+  bool is_contiguous_ : 1;
+
+  bool storage_access_should_throw_ : 1;
+
+  bool is_channels_last_ : 1;
+  bool is_channels_last_contiguous_ : 1;
+  bool is_channels_last_3d_ : 1;
+
+  bool is_channels_last_3d_contiguous_ : 1;
+
+  bool is_non_overlapping_and_dense_ : 1;
+
+  bool is_wrapped_number_ : 1;
+
+  bool allow_tensor_metadata_change_ : 1;
+
+  bool reserved_ : 1;
+  uint8_t sizes_strides_policy_ : 2;
+
+  DispatchKeySet key_set_;
+
+}
+
+```
+
+对于TensorImpl类来说，比较重要的成员变量有以下几个：
+- storage_。这个变量存储了真正的张量数据
+- autograd_meta_。存储反向传播所需要的元信息，如梯度计算函数和梯度等。
+- pyobj_。Tensor所对应的Python Object
+- data_type_。Tensor内的数据类型。
+- device_opt_。存放Tensor的设备。
+- 
+
+下面我们看一下Tensor的存储，因为Tensor的存储方式和算子的计算息息相关，对性能的影响也非常的关键。
+```C++
+// c10/core/Storage.h
+
+struct C10_API Storage {
+  //...
+
+ protected:
+  c10::intrusive_ptr<StorageImpl> storage_impl_;
+}
+
+```
+和Tensor的定义类似，Storage也是使用StorageImpl类来隐藏其复杂的实现。因此我们主要关注StorageImpl的实现。
+
+```C++
+// c10/core/StorageImpl.h
+
+struct C10_API StorageImpl : public c10::intrusive_ptr_target {
+ public:
+  struct use_byte_size_t {};
+
+  StorageImpl(
+      use_byte_size_t /*use_byte_size*/,
+      size_t size_bytes,
+      at::DataPtr data_ptr,
+      at::Allocator* allocator,
+      bool resizable)
+      : data_ptr_(std::move(data_ptr)),
+        size_bytes_(size_bytes),
+        resizable_(resizable),
+        received_cuda_(false),
+        allocator_(allocator) {
+    if (resizable) {
+      TORCH_INTERNAL_ASSERT(
+          allocator_, "For resizable storage, allocator must be provided");
+    }
+  }
+
+  void* data() {
+    return data_ptr_.get();
+  }
+  at::DeviceType device_type() const {
+    return data_ptr_.device().type();
+  }
+
+private:
+  DataPtr data_ptr_;
+  size_t size_bytes_;
+  bool resizable_;
+  // Identifies that Storage was received from another process and doesn't have
+  // local to process cuda memory allocation
+  bool received_cuda_;
+  Allocator* allocator_;
+}
+```
+
+StorageImpl的关键成员是data_ptr_, 其定义在这里：
+
+```C++
+// c10/core/Allocator.h
+
+class C10_API DataPtr {
+ private:
+  c10::detail::UniqueVoidPtr ptr_;
+  Device device_;
+
+  
+}
+
+// c10/util/UniqueVoidPtr.h
+
+class UniqueVoidPtr {
+ private:
+  // Lifetime tied to ctx_
+  void* data_;
+  std::unique_ptr<void, DeleterFnPtr> ctx_;
+
+  // ...
+}
+```
 
 ## TensorOption
 
@@ -209,13 +428,6 @@ torch.zeros(2, 3, dtype=torch.int32)
 
 实际使用时，at::zeros()系列函数隐式的使用TensorOptions。 TensorOptions可以看作是一个字典。
 
-
-```C++
-// c10/core/TensorOptions.h
-
-
-
-```
 
 ## Node
 Node的定义在torch/csrc/autograd/function.h中。
@@ -268,3 +480,13 @@ initialize_autogenerated_functionsEverything();
         registerCppFunction();
             cpp_function_types[idx] = type
 ```
+
+
+
+## 参考
+- https://blog.csdn.net/Xixo0628/article/details/112603174
+- https://blog.csdn.net/Xixo0628/article/details/112603174
+- https://pytorch.org/blog/a-tour-of-pytorch-internals-1/#the-thptensor-type
+- PyTorch源码浅析(1)：THTensor https://blog.csdn.net/Xixo0628/article/details/112603174
+- PyTorch源码浅析(1)：THTensor https://www.52coding.com.cn/2019/05/05/PyTorch1/
+

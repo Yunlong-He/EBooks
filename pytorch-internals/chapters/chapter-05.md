@@ -573,7 +573,51 @@ struct VectorizedLoop2d {
   }
 };
 ```
-很明显，VectorizedLoop2d的主要工作就是根据Tensor的stride的不同，选择不同的调用模式，但最终不管是调用vectorized_loop()还是调用basic_loop()，都是对一块连续的Tensor进行计算。可以这样计算的
+很明显，VectorizedLoop2d的主要工作就是根据Tensor的stride的不同，选择不同的调用模式，但最终不管是调用vectorized_loop()还是调用basic_loop()，都是对一块连续的Tensor进行计算。可以这样计算的。
+
+现在我们回到当初sigmoid函数的实现部分，其中对每个Tensor的操作函数实现是这样的：
+
+```C++
+// aten/src/ATen/native/cpu/UnaryOpsKernel.cpp
+      cpu_kernel_vec(
+          iter,
+          [=](scalar_t a) -> scalar_t {
+            return (static_cast<scalar_t>(1) / (static_cast<scalar_t>(1) + std::exp((-a))));
+          },
+          [=](Vectorized<scalar_t> a) {
+            a = Vectorized<scalar_t>(static_cast<scalar_t>(0)) - a;
+            a = a.exp();
+            a = Vectorized<scalar_t>(static_cast<scalar_t>(1)) + a;
+            a = a.reciprocal();
+            return a;
+          });
+
+// aten/src/ATen/native/cpu/vec/vec256/vec256_float.h
+ Vectorized<float> exp() const {
+    return Vectorized<float>(Sleef_expf8_u10(values));
+  }
+```
+
+在代码中可以看出，对应cpu的实现有很多，实际运行时会根据不同的平台和数据类型调用相应的实现，以达到比较好的性能。而由于CPU上的向量计算有很多库可以用，这里用到的是sleef库的实现。
+
+> https://blog.csdn.net/yelede2009/article/details/120411361
+> 有各种函数库以向量方式来计算数学函数，例如：对数、幂函数、三角函数等。这些函数库对向量化数学代码是有用的。
+> 有两种不同种类的向量数学库：长向量库和短向量库。来看看它们的不同。假设要计算1000个数字的某个函数。用长向量库，把1000个数字的数组作为参数传给库函数，这
+> 个库函数存储这1000个结果到另一个数组。使用长向量版库函数的缺点是，如果要做一系列计算，在下一次调用函数前就需要存储中间结果到一个临时数组中。用短向量版本
+> 的向量库，可以把数据集拆分为子向量来适配向量寄存器。如果向量寄存器可以处理4个数字，那么需要调用250此库函数。这个库函数会返回结果到向量寄存器中，可以直接
+> 被下一次计算利用，而不需要存储中间结果到RAM中。这可能更快。然而，短向量的库函数可能是不利的，如果计算序列形成了长依赖链。
+>这是一些长向量函数库：
+>
+>    Intel 向量数学库（VML, MKL）。工作在x86平台。这些库函数在非Intel的CPU上会低效，除非重写了Intel cpu分发器。
+>    Intel的IPP。工作在x86平台。也适用于非Intel的CPU。包含很多统计、信号处理和图像处理函数。
+>    Yeppp。开源库。支持x86和ARM平台，多种编程语言。参考Yeppp。
+>
+>这是一些短向量库：
+>
+>    Sleef库。支持多种平台。开源。参考www.sleef.org。
+>    Intel短向量库（SVML）。Intel编译器提供，被自动向量化调用。Gnu编译器可以通过选项-mveclibabi=svml使用这个库。如果用的是非Intel的CPU，也可以使用。
+>    AMD LIBM库。只支持64位Linux平台。没有FMA4指令集时，性能会降低。Gnu通过-mveclibabi=acml选项使用。
+>    VCL库。个人开发。参考https://github.com/vectorclass。
 
 Dispatch的过程似乎有些复杂，有很多宏处理，更是导致不容易看懂。
 ```C++
