@@ -112,9 +112,10 @@ $ git submodule update --init --recursive
 启动容器，挂载PyTorch源码所在的目录，然后启动编译命令：
 
 ```Bash
-#YL  如果需要编译DEBUG版本，可以设置环境变量DEBUG=1，setup_helpers/env.py中，会识别这个环境变量，并在编译选项中加上‘-O0 -g'的选项。
+# 如果需要编译DEBUG版本，可以设置环境变量DEBUG=1，tools/setup_helpers/env.py中，会识别这个环境变量，并在编译选项中加上‘-O0 -g'的选项。
+# 在toos/setup_helpers/cmake.py中，可以看到make命令编译时的参数，其中MAX_JOBS这个参数可以控制使用多少个线程并行编译。对于资源比较有限的机器如个人PC，建议设置这个环境变量小一些，避免因为CPU占满导致系统挂起。
 python setup.py clean
-CMAKE_BUILD_PARALLEL_LEVEL=2 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build_test.log
+MAX_JOBS=2 DEBUG=1 USE_GPU=1 python setup.py build 2>&1 | tee build_test.log
 ```
 
 在编译启动后，会创建build目录，之后所有的编译工作都在这个目录下完成。

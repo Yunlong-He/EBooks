@@ -42,6 +42,8 @@ C++扩展模块_C可以说是PyTorch的核心，是PyTorch代码量最大最复�
 在这个函数中，进行了一系列的初始化工作
 
 ```C++
+// torch/csrc/Module.cpp
+
 PyObject* initModule() {
 
   // ...
@@ -182,7 +184,103 @@ PyObject* initModule() {
 }
 ```
 
+## Torch 函数库的初始化
 
+在Python层面，模块torch提供了非常多的函数，比如torch.abs()，torch.randn()， torch.ones()等等，在初始化_C模块的时候，这些函数也被注册到_C模块中。
+
+```C++
+// torch/csrc/autograd/python_variable.cpp
+
+bool THPVariable_initModule(PyObject *module)
+{
+  // ...
+  PyModule_AddObject(module, "_TensorBase",   (PyObject *)&THPVariableType);
+  torch::autograd::initTorchFunctions(module);
+  // ...
+  return true;
+}
+```
+在下面的代码中，我们可以看到，相关的函数被收集到torch_functions中，同时这个函数列表也被注册到_C的_VariableFunctions这个子模块中。
+```C++
+// torch/csrc/autograd/python_torch_functions_manual.cpp
+
+void initTorchFunctions(PyObject *module) {
+  static std::vector<PyMethodDef> torch_functions;
+  gatherTorchFunctions(torch_functions);
+  THPVariableFunctions.tp_methods = torch_functions.data();
+  
+  //...
+  if (PyModule_AddObject(module, "_VariableFunctionsClass",
+                         reinterpret_cast<PyObject*>(&THPVariableFunctions)) < 0) {
+    throw python_error();
+  }
+  // PyType_GenericNew returns a new reference
+  THPVariableFunctionsModule = PyType_GenericNew(&THPVariableFunctions, Py_None, Py_None);
+  // PyModule_AddObject steals a reference
+  if (PyModule_AddObject(module, "_VariableFunctions", THPVariableFunctionsModule) < 0) {
+    throw python_error();
+  }
+}
+```
+
+在torch模块的初始化过程中，_C模块的子模块_VariableFunctions中的所有属性都被注册到torch模块中，当然也包括所有的函数。
+```Python
+# torch/__init__.py
+
+for name in dir(_C._VariableFunctions):
+    if name.startswith('__') or name in PRIVATE_OPS:
+        continue
+    obj = getattr(_C._VariableFunctions, name)
+    obj.__module__ = 'torch'
+    globals()[name] = obj
+    if not name.startswith("_"):
+        __all__.append(name)
+```
+
+下面我们看看具体有哪些函数被注册了。函数列表是通过gatherTorchFunctions()来收集的，这个函数又调用了gatherTorchFunctions_0(), gatherTorchFunctions_1(), gatherTorchFunctions_2()这几个函数。
+
+```C++
+// torch/csrc/autograd/python_torch_functions_manual.cpp
+
+void gatherTorchFunctions(std::vector<PyMethodDef> &torch_functions) {
+  constexpr size_t num_functions = sizeof(torch_functions_manual) / sizeof(torch_functions_manual[0]);
+  torch_functions.assign(torch_functions_manual,
+                         torch_functions_manual + num_functions);
+  // NOTE: Must be synced with num_shards in tools/autograd/gen_python_functions.py
+  gatherTorchFunctions_0(torch_functions);
+  gatherTorchFunctions_1(torch_functions);
+  gatherTorchFunctions_2(torch_functions);
+
+  //...
+
+```
+为什么这样设计呢？大概有两个原因：
+- 函数的数量很多，而且在不断的增加，需要方便扩展
+- 函数大多是算子，算子和平台相关，每个算子有多种实现，同样为了在不同平台迁移扩展，PyTorch设计了代码生成机制来屏蔽通用的、繁琐的功能，这个生成机制也需要解耦。
+
+gatherTorchFunctions_N()这几个函数是通过模板生成的，完成编译后，可以在下面的文件中找到：
+
+```C++
+// torch/csrc/autograd/generated/python_torch_functions_0.cpp
+
+static PyMethodDef torch_functions_shard[] = {
+  {"_cast_Byte", castPyCFunctionWithKeywords(THPVariable__cast_Byte), METH_VARARGS | METH_KEYWORDS | METH_STATIC, NULL},
+  //...
+  {"eye", castPyCFunctionWithKeywords(THPVariable_eye), METH_VARARGS | METH_KEYWORDS | METH_STATIC, NULL},
+  {"rand", castPyCFunctionWithKeywords(THPVariable_rand), METH_VARARGS | METH_KEYWORDS | METH_STATIC, NULL},
+  //...
+};
+
+void gatherTorchFunctions_0(std::vector<PyMethodDef> &torch_functions) {
+  constexpr size_t num_functions = sizeof(torch_functions_shard) / sizeof(torch_functions_shard[0]);
+  torch_functions.insert(
+    torch_functions.end(),
+    torch_functions_shard,
+    torch_functions_shard + num_functions);
+}
+
+
+```
 
 ## Tensor
 
@@ -413,6 +511,77 @@ class UniqueVoidPtr {
   // ...
 }
 ```
+
+现在我们知道，在C++的层面，张量被Tensor类型所表示，但是我们平时是使用Python语言来训练推理模型的，使用的自然是Python中的Tensor类型，那么在PyTorch中是如何实现从Python语言中的Tensor对象到C++中的Tensor对象的转换呢？
+
+详细的过程我们留到后面的章节解释，不过机制并不复杂，PyTorch使用了THPVariable这个类型作为过渡，Python中的Tensor类
+
+在前面初始化_C模块的时候，调用了THPVariable_initModule()这个函数，将Python中_TensorBase这个类型映射到THPVariableType这个C++类型上，
+
+```C++
+// torch/csrc/autograd/python_variable.cpp
+
+bool THPVariable_initModule(PyObject *module)
+{
+  // ...
+  PyModule_AddObject(module, "_TensorBase",   (PyObject *)&THPVariableType);
+  torch::autograd::initTorchFunctions(module);
+  // ...
+  return true;
+}
+
+PyTypeObject THPVariableType = {
+    PyVarObject_HEAD_INIT(
+        &THPVariableMetaType,
+        0) "torch._C._TensorBase", /* tp_name */
+    // ...
+    THPVariable_pynew, /* tp_new */
+};
+
+PyObject *THPVariable_pynew(PyTypeObject *type, PyObject *args, PyObject *kwargs)
+{
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(type != &THPVariableType, "Cannot directly construct _TensorBase; subclass it and then construct that");
+  jit::tracer::warn("torch.Tensor", jit::tracer::WARN_CONSTRUCTOR);
+  auto tensor = torch::utils::base_tensor_ctor(args, kwargs);
+  // WARNING: tensor is NOT guaranteed to be a fresh tensor; e.g., if it was
+  // given a raw pointer that will refcount bump
+  return THPVariable_NewWithVar(
+      type,
+      std::move(tensor),
+      c10::impl::PyInterpreterStatus::MAYBE_UNINITIALIZED);
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* THPVariable_NewWithVar(
+    PyTypeObject* type,
+    Variable _var,
+    c10::impl::PyInterpreterStatus status) {
+ 
+  PyObject* obj = type->tp_alloc(type, 0);
+  if (obj) {
+    auto v = (THPVariable*) obj;
+    // TODO: named constructor to avoid default initialization
+    new (&v->cdata) MaybeOwned<Variable>();
+    v->cdata = MaybeOwned<Variable>::owned(std::move(_var));
+    const auto& var = THPVariable_Unpack(v);
+    var.unsafeGetTensorImpl()->init_pyobj(self_interpreter.get(), obj, status);
+    if (check_has_torch_dispatch(obj)) {
+      var.unsafeGetTensorImpl()->set_python_dispatch(true);
+    }
+  }
+  return obj;
+}
+
+// torch/csrc/autograd/python_variable.h
+struct THPVariable {
+  PyObject_HEAD;
+  c10::MaybeOwned<at::Tensor> cdata;
+  PyObject* backward_hooks = nullptr;
+};
+```
+
+
 
 ## TensorOption
 

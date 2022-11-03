@@ -34,7 +34,7 @@ PyMethodDef variable_methods[] = {
 THPVariable_add()方法的具体实现代码是生成的，因此我们在原始的模板文件中可以找到使用这个函数，真正的实现有多个，对应不同的调用方式。在这个例子里，对应调用的是下面这个实现：
 
 ```C++
-//torch/csrc/autograd/generated/python_variable_methods.cpp [generated file]
+// torch/csrc/autograd/generated/python_variable_methods.cpp [generated file]
 
 static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwargs)
 {
@@ -75,6 +75,7 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
 }
 ```
 其中 PythonArgParser 定义了这个函数的几类参数，并将Python调用的参数转换成对应的C++类型，在这个例子里，调用的参数符合第二组定义，因此_r.index为1，最后调用的是下面这个方法：
+
 
 
 ```C++
