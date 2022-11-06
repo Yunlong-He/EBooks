@@ -5,7 +5,7 @@
 
 - PyTorch介绍
 - 
-
+<img src="../images/dl_framework_trend.png"/>
 
 &emsp;&emsp;下面是一个非常简单的PyTorch训练代码
 
