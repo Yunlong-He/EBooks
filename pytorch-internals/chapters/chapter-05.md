@@ -759,10 +759,13 @@ Library::Library(Kind kind, std::string ns, c10::optional<c10::DispatchKey> k, c
 
 ```
 
+#####Todo schema specification
 
-对于每一个dispatch_key, 宏TORCH_LIBRARY_IMPL定义了一个函数，允许用户在这个函数体内注册
+#### TORCH_LIBRARY_IMPL
 
-例如，在下面的代码中，注册了包括add_Tensor在内的多个算子。
+每个算子有唯一的schema，但是可能有很多的实现，在实际运行中，PyTorch会通过Dispatcher查找合适的实现并执行，查找的依据是张量的DispatchKeySet。所有和该算子相关的实现也都注册到Dispatcher，并关联了相应的DispatchKeySet。
+
+算子实现的注册方式是通过TORCH_LIBRARY_IMPL，例如，在下面的代码中，注册了多个Autograd算子和CUDA。
 
 ```C++
 // torch/csrc/autograd/generated/VariableTypeEveryThing.cpp
@@ -777,10 +780,7 @@ TORCH_LIBRARY_IMPL(aten, Autograd, m) {
   );
   // ...
 }
-```
 
-在这里注册了CUDA算子：
-```C++
 // build/aten/src/ATen/RegisterCUDA.cpp
 
 TORCH_LIBRARY_IMPL(aten, CUDA, m) {
@@ -800,12 +800,176 @@ TORCH_LIBRARY_IMPL(aten, CUDA, m) {
 }
 ```
 
+容易看出，TORCH_LIBRARY_IMPL定义了命名空间ns下，DispatchKeySet为CUDA的一组算子实现，开发者可以通过m.impl()将算子实现注册到Dispatcher中。
+
+下面我们看一下这个宏的实现：
+
+```C++
+// torch/library.h
+
+#define TORCH_LIBRARY_IMPL(ns, k, m) _TORCH_LIBRARY_IMPL(ns, k, m, C10_UID)
+
+#define _TORCH_LIBRARY_IMPL(ns, k, m, uid)                             \
+  static void C10_CONCATENATE(                                         \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library&);    \
+  static const torch::detail::TorchLibraryInit C10_CONCATENATE(        \
+      TORCH_LIBRARY_IMPL_static_init_##ns##_##k##_, uid)(              \
+      torch::Library::IMPL,                                            \
+      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check( \
+          c10::DispatchKey::k)>(                                       \
+          []() {                                                       \
+            return &C10_CONCATENATE(                                   \
+                TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid);           \
+          },                                                           \
+          []() { return [](torch::Library&) -> void {}; }),            \
+      #ns,                                                             \
+      c10::make_optional(c10::DispatchKey::k),                         \
+      __FILE__,                                                        \
+      __LINE__);                                                       \
+  void C10_CONCATENATE(                                                \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
+
+```
+
+和宏TORCH_LIBRARY类似，TORCH_LIBRARY_IMPL首先声明一个算子库的初始化函数，然后创建了一个TorchLibraryInit的实例，这个实例会初始化Library的实例，并调用算子库的初始化函数。如前面所述，所有的算子实现的注册工作都在这个算子库的初始化函数里完成。
+在Library的实例化过程中，该Library也会被注册到全局的Dispatcher里，如下面的实现所示，注册的时候以namespace为关键字。
+
+接下来我们看一下注册方法实现的细节，因为算子对应的实现，也就是kernel function，是通过m.impl()来注册的，我们看一下该方法的实现:
+
+```C++
+// aten/src/ATen/core/library.cpp
+
+Library& Library::_impl(const char* name_str, CppFunction&& f) & {
+  auto name = torch::jit::parseName(name_str);
+  auto ns_opt = name.getNamespace();
+
+  //...
+
+  auto dispatch_key = f.dispatch_key_.has_value() ? f.dispatch_key_ : dispatch_key_;
+  registrars_.emplace_back(
+    c10::Dispatcher::singleton().registerImpl(
+      std::move(name),
+      dispatch_key,
+      std::move(f.func_),
+      // NOLINTNEXTLINE(performance-move-const-arg)
+      std::move(f.cpp_signature_),
+      std::move(f.schema_),
+      debugString(std::move(f.debug_), file_, line_)
+    )
+  );
+  return *this;
+}
+
+// aten/src/ATen/core/dispatch/Dispatcher.cpp
+RegistrationHandleRAII Dispatcher::registerImpl(
+  OperatorName op_name,
+  c10::optional<DispatchKey> dispatch_key,
+  KernelFunction kernel,
+  c10::optional<impl::CppSignature> cpp_signature,
+  std::unique_ptr<FunctionSchema> inferred_function_schema,
+  std::string debug
+) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  auto op = findOrRegisterName_(op_name);
+
+  auto handle = op.operatorDef_->op.registerKernel(
+    *this,
+    dispatch_key,
+    std::move(kernel),
+    // NOLINTNEXTLINE(performance-move-const-arg)
+    std::move(cpp_signature),
+    std::move(inferred_function_schema),
+    std::move(debug)
+  );
+
+  ++op.operatorDef_->def_and_impl_count;
+
+  return RegistrationHandleRAII([this, op, op_name, dispatch_key, handle] {
+    deregisterImpl_(op, op_name, dispatch_key, handle);
+  });
+}
+
+// aten/src/ATen/core/dispatch/OperatorEntry.cpp
+OperatorEntry::AnnotatedKernelContainerIterator OperatorEntry::registerKernel(
+  const c10::Dispatcher& dispatcher,
+  c10::optional<DispatchKey> dispatch_key,
+  KernelFunction kernel,
+  c10::optional<CppSignature> cpp_signature,
+  std::unique_ptr<FunctionSchema> inferred_function_schema,
+  std::string debug
+) {
+
+  //检查并校验cpp_signature
+
+  // 检查schema
+
+  // Add the kernel to the kernels list,
+  // possibly creating the list if this is the first kernel.
+  // Redirect catchAll registrations to CompositeImplicitAutograd.
+  auto& k = dispatch_key.has_value() ? kernels_[*dispatch_key] : kernels_[DispatchKey::CompositeImplicitAutograd];
+
+  // 检查dispatch key, 如果已经存在，就发出覆盖警告
+
+  // 将kernel信息加入到对应的OperatorEntry的dispatch key中
+#ifdef C10_DISPATCHER_ONE_KERNEL_PER_DISPATCH_KEY
+  k[0].kernel = std::move(kernel);
+  k[0].inferred_function_schema = std::move(inferred_function_schema);
+  k[0].debug = std::move(debug);
+#else
+  k.emplace_front(std::move(kernel), std::move(inferred_function_schema), std::move(debug));
+#endif
+
+  // 更新dispatch table  
+  AnnotatedKernelContainerIterator inserted = k.begin();
+  // update the dispatch table, i.e. re-establish the invariant
+  // that the dispatch table points to the newest kernel
+  if (dispatch_key.has_value()) {
+    updateDispatchTable_(dispatcher, *dispatch_key);
+  } else {
+    updateDispatchTableFull_(dispatcher);
+  }
+  return inserted;  
+}
+```
+
+
+
+
+在VariableTypeEverything.cpp中，有这样一条语句：
+```C++
+TORCH_LIBRARY_IMPL(aten, Autograd, m) {
+  ...
+}
+```
+展开之后的形式如下：
+
+```C++
+  
+static void TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID(torch::Library&);
+  static const torch::detail::TorchLibraryInit 
+      TORCH_LIBRARY_IMPL_static_init_aten_Autograd_C10_UID(
+      torch::Library::IMPL,
+      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check(
+          c10::DispatchKey::k)>(
+          []() {
+            return & TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID;
+          },
+          []() { return [](torch::Library&) -> void {}; }),
+      #ns,                                                             \
+      c10::make_optional(c10::DispatchKey::k),                         \
+      __FILE__,                                                        \
+      __LINE__);                                                       \
+  void C10_CONCATENATE(                                                \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
+
+```
+
 
 这里看到两种注册的类型，一种是OperatorHandler，注册到operatorLookupTable_中，可以根据OperatorName查询，另一种是Function，一组Function注册到Library之后，再将Library注册到libraries_。
 
 比如对于例子中的 y = x + 2这条语句，dispatcher会查询到一个OperatorHandler op
 ， op.operatorDef_->op.name_就是OperatorName("aten::add"，"Tensor")，但是注册的kernelfunction很多。
-
 
 ```C++
 // ./aten/src/ATen/core/dispatch/Dispatcher.h
@@ -861,75 +1025,6 @@ at::native::AVX2::cpu_kernel_vec<> (grain_size=32768, vop=..., op=..., iter=...)
     params#0=params#0@entry=0x7fffffffd270, params#1=params#1@entry=0x7fffffffd300, params#2=params#2@entry=4, 
     params#3=params#3@entry=1) at ../c10/util/FunctionRef.h:43
 
-
-```
-
-
-下面我们看一下这两个宏的实现：
-
-```C++
-#define TORCH_LIBRARY(ns, m)                                                   \
-  static void TORCH_LIBRARY_init_##ns(torch::Library&);                        \
-  static const torch::detail::TorchLibraryInit TORCH_LIBRARY_static_init_##ns( \
-      torch::Library::DEF,                                                     \
-      &TORCH_LIBRARY_init_##ns,                                                \
-      #ns,                                                                     \
-      c10::nullopt,                                                            \
-      __FILE__,                                                                \
-      __LINE__);                                                               \
-  void TORCH_LIBRARY_init_##ns(torch::Library& m)
-
-
-#define TORCH_LIBRARY_IMPL(ns, k, m) _TORCH_LIBRARY_IMPL(ns, k, m, C10_UID)
-
-#define _TORCH_LIBRARY_IMPL(ns, k, m, uid)                             \
-  static void C10_CONCATENATE(                                         \
-      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library&);    \
-  static const torch::detail::TorchLibraryInit C10_CONCATENATE(        \
-      TORCH_LIBRARY_IMPL_static_init_##ns##_##k##_, uid)(              \
-      torch::Library::IMPL,                                            \
-      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check( \
-          c10::DispatchKey::k)>(                                       \
-          []() {                                                       \
-            return &C10_CONCATENATE(                                   \
-                TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid);           \
-          },                                                           \
-          []() { return [](torch::Library&) -> void {}; }),            \
-      #ns,                                                             \
-      c10::make_optional(c10::DispatchKey::k),                         \
-      __FILE__,                                                        \
-      __LINE__);                                                       \
-  void C10_CONCATENATE(                                                \
-      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
-
-```
-
-在VariableTypeEverything.cpp中，有这样一条语句：
-```C++
-TORCH_LIBRARY_IMPL(aten, Autograd, m) {
-  ...
-}
-```
-展开之后的形式如下：
-
-```C++
-  
-static void TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID(torch::Library&);
-  static const torch::detail::TorchLibraryInit 
-      TORCH_LIBRARY_IMPL_static_init_aten_Autograd_C10_UID(
-      torch::Library::IMPL,
-      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check(
-          c10::DispatchKey::k)>(
-          []() {
-            return & TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID;
-          },
-          []() { return [](torch::Library&) -> void {}; }),
-      #ns,                                                             \
-      c10::make_optional(c10::DispatchKey::k),                         \
-      __FILE__,                                                        \
-      __LINE__);                                                       \
-  void C10_CONCATENATE(                                                \
-      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
 
 ```
 

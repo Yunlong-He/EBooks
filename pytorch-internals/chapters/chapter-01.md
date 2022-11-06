@@ -3,7 +3,19 @@
 
 ## 主要内容
 
-- PyTorch介绍
+## PyTorch的发展历史
+
+参考 https://mp.weixin.qq.com/s/JrutTVvFtx3xZoagy661LQ
+
+- 相关的人： Soumith Chintala
+
+### Torch7
+
+### PyTorch的启动
+
+### 加入Apache基金会
+
+### 
 - 
 <img src="../images/dl_framework_trend.png"/>
 
