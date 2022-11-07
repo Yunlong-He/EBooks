@@ -639,6 +639,8 @@ ATen的native函数是PyTorch目前主推的operator机制，作为对比，老�
 
 ## 生成的库
 
+<img src="../images/compiled_libraries.png"/>
+
 ```Bash
 # /pytorch/build/lib.linux-x86_64-3.7/torch
 ./_C.cpython-37m-x86_64-linux-gnu.so

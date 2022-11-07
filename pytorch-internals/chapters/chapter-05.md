@@ -117,7 +117,7 @@ at::Tensor add_Tensor::call(const at::Tensor & self, const at::Tensor & other, c
 这里创建的op的类型是c10::OperatorHandle
 
 
-## 算子的注册过程
+## 算子分发的基本概念
 增加新的算子时，需要先使用TORCH_LIBRARY定义算子的schema，然后使用宏 TORCH_LIBRARY_IMPL来注册该算子在cpu、cuda、XLA等上的实现。注册的时候，需要指定namespace及该namespace下的dispatch_key，如果注册的是fallback实现（缺省实现）,namespace可以使用“_”。
 
 参考官方文档 https://pytorch.org/tutorials/advanced/dispatcher.html
@@ -671,7 +671,9 @@ private:
 
 ```
 
-### 算子注册
+<img src="../images/dispatcher.png"/>
+
+## 算子注册过程
 
 在PyTorch中，全局只有一个唯一的Dispatcher，所有的算子都注册到这个Dispatcher上，因为算子很多，为了方便，将算子注册的过程简化成了两个宏：TORCH_LIBRARY和TORCH_LIBRARY_IMPL。
 
@@ -759,7 +761,7 @@ Library::Library(Kind kind, std::string ns, c10::optional<c10::DispatchKey> k, c
 
 ```
 
-#####Todo schema specification
+> TODO: add schema specification
 
 #### TORCH_LIBRARY_IMPL
 
@@ -778,6 +780,14 @@ TORCH_LIBRARY_IMPL(aten, Autograd, m) {
   m.impl("add.Scalar",
          TORCH_FN(VariableType::add_Scalar)
   );
+  // ...
+}
+
+// build/aten/src/ATen/RegisterCPU.cpp
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+  // ...
+    m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
+    m.impl("add.out", TORCH_FN(wrapper_add_out_out));
   // ...
 }
 
@@ -934,37 +944,79 @@ OperatorEntry::AnnotatedKernelContainerIterator OperatorEntry::registerKernel(
 ```
 
 
-
-
-在VariableTypeEverything.cpp中，有这样一条语句：
+#### 算子封装
+前面介绍到，注册算子的CPU实现的时候，注册的是函数wrapper_add_Tensor：
 ```C++
-TORCH_LIBRARY_IMPL(aten, Autograd, m) {
-  ...
+// build/aten/src/ATen/RegisterCPU.cpp
+
+at::Tensor wrapper_add_Tensor(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  structured_ufunc_add_CPU_functional op;
+  op.meta(self, other, alpha);
+  op.impl(self, other, alpha, *op.outputs_[0]);
+  return std::move(op.outputs_[0]).take();
 }
 ```
-展开之后的形式如下：
+
+其中meta函数会调用到命名空间meta下的函数，其中TORCH_META_FUNC2(add, Tensor)等同于“void structured_add_Tensor::meta”。
 
 ```C++
-  
-static void TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID(torch::Library&);
-  static const torch::detail::TorchLibraryInit 
-      TORCH_LIBRARY_IMPL_static_init_aten_Autograd_C10_UID(
-      torch::Library::IMPL,
-      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check(
-          c10::DispatchKey::k)>(
-          []() {
-            return & TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID;
-          },
-          []() { return [](torch::Library&) -> void {}; }),
-      #ns,                                                             \
-      c10::make_optional(c10::DispatchKey::k),                         \
-      __FILE__,                                                        \
-      __LINE__);                                                       \
-  void C10_CONCATENATE(                                                \
-      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
+// aten/src/ATen/native/BinaryOps.cpp
+namespace meta {
+
+TORCH_META_FUNC2(add, Tensor) (
+  const Tensor& self, const Tensor& other, const Scalar& alpha
+) {
+  build_borrowing_binary_op(maybe_get_output(), self, other);
+  native::alpha_check(dtype(), alpha);
+}
+```
+
+在
+```C++
+// build/aten/src/ATen/UfuncCPUkernel_add.cpp
+
+void add_kernel(TensorIteratorBase& iter, const at::Scalar & alpha) {
+  at::ScalarType st = iter.common_dtype();
+  RECORD_KERNEL_FUNCTION_DTYPE("add_stub", st);
+  switch (st) {
+    
+AT_PRIVATE_CASE_TYPE("add_stub", at::ScalarType::Bool, bool,
+  [&]() {
+    
+auto _s_alpha = alpha.to<scalar_t>();
+cpu_kernel(iter,
+  [=](scalar_t self, scalar_t other) { return ufunc::add(self, other, _s_alpha); }
+);
+
+  }
+)
+```
+
+算子注册：
+```C++
+// build/aten/src/ATen/UfuncCPUkernel_add.cpp
+
+using add_fn = void(*)(TensorIteratorBase&, const at::Scalar &);
+DECLARE_DISPATCH(add_fn, add_stub);
+REGISTER_DISPATCH(add_stub, &add_kernel);
+
+// aten/src/ATen/native/DispatchStub.cpp
+
+#define DECLARE_DISPATCH(fn, name)         \
+  struct name : DispatchStub<fn, name> {   \
+    name() = default;                      \
+    name(const name&) = delete;            \
+    name& operator=(const name&) = delete; \
+  };                                       \
+  extern TORCH_API struct name name
+
+#define REGISTER_DISPATCH(name, fn) REGISTER_ARCH_DISPATCH(name, CPU_CAPABILITY, fn)
+#define REGISTER_ARCH_DISPATCH(name, arch, fn) \
+  template <> name::FnPtr TORCH_API DispatchStub<name::FnPtr, struct name>::arch = fn;
 
 ```
 
+#### OperatorHandle
 
 这里看到两种注册的类型，一种是OperatorHandler，注册到operatorLookupTable_中，可以根据OperatorName查询，另一种是Function，一组Function注册到Library之后，再将Library注册到libraries_。
 
@@ -972,7 +1024,7 @@ static void TORCH_LIBRARY_IMPL_init_aten_Autograd_C10_UID(torch::Library&);
 ， op.operatorDef_->op.name_就是OperatorName("aten::add"，"Tensor")，但是注册的kernelfunction很多。
 
 ```C++
-// ./aten/src/ATen/core/dispatch/Dispatcher.h
+// aten/src/ATen/core/dispatch/Dispatcher.h
 
 class TORCH_API OperatorHandle {
 public:
@@ -1052,20 +1104,29 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
         PythonArgs PythonArgParser::raw_parse(PyObject* self, PyObject* args, PyObject* kwargs, PyObject* parsed_args[]);
         bool FunctionSignature::parse(PyObject* self, PyObject* args, PyObject* kwargs, PyObject* dst[], bool raise_exception);
 
-    // torch/include/ATen/core/TensorBody.h
+    // torch/include/ATen/core/TensorBody.h   --- generated from aten/src/ATen/templates/TensorBody.h
     inline at::Tensor & Tensor::add(const at::Tensor & other, const at::Scalar & alpha) const;
 
         // build/aten/src/ATen/Operators_2.cpp
-        at::Tensor & add__Tensor::call(at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+        at::Tensor & add_Tensor::call(at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
 
             // aten/src/ATen/core/dispatch/Dispatcher.cpp
             OperatorHandle Dispatcher::findSchemaOrThrow(const char* name, const char* overload_name);
                 c10::optional<OperatorHandle> Dispatcher::findSchema(const OperatorName& overload_name);
                 c10::optional<OperatorHandle> Dispatcher::findOp(const OperatorName& overload_name);
-                
+
+            // aten/src/ATen/core/dispatch/Dispatcher.cpp
+            Return TypedOperatorHandle::call(Args... args) const;
+
                 // aten/src/ATen/core/dispatch/Dispatcher.cpp
                 Return Dispatcher::call(const TypedOperatorHandle<Return(Args...)>& op, Args... args) const;
- 
+
+                    // aten/src/ATen/core/dispatch/DispatchKeyExtractor.h
+                    DispatchKeySet DispatchKeyExtractor::getDispatchKeySetUnboxed(const Args&... args) const;
+
+                    // aten/src/ATen/core/boxing/KernelFunction.h
+                    Return call(const OperatorHandle& opHandle, DispatchKeySet dispatchKeySet, Args... args) const;
+
 
 
     // torch/csrc/autograd/utils/wrap_outputs.h
