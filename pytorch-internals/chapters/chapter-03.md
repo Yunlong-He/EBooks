@@ -636,6 +636,195 @@ third_party/ideep
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
 
 
+```
+
+代码生成相关的工具在tools目录下：
+```Bash
+├── autograd
+│   ├── gen_annotated_fn_args.py
+│   ├── gen_autograd_functions.py
+│   ├── gen_autograd.py
+│   ├── gen_inplace_or_view_type.py
+│   ├── gen_python_functions.py
+│   ├── gen_trace_type.py
+│   ├── gen_variable_factories.py
+│   ├── gen_variable_type.py
+│   └── templates
+│       ├── ADInplaceOrViewType.cpp
+│       ├── annotated_fn_args.py.in
+│       ├── Functions.cpp
+│       ├── Functions.h
+│       ├── python_fft_functions.cpp
+│       ├── python_functions.cpp
+│       ├── python_functions.h
+│       ├── python_linalg_functions.cpp
+│       ├── python_nn_functions.cpp
+│       ├── python_return_types.cpp
+│       ├── python_sparse_functions.cpp
+│       ├── python_special_functions.cpp
+│       ├── python_torch_functions.cpp
+│       ├── python_variable_methods.cpp
+│       ├── TraceType.cpp
+│       ├── variable_factories.h
+│       ├── VariableType.cpp
+│       └── VariableType.h
+├── code_analyzer
+│   ├── gen_operators_yaml.py
+│   ├── gen_oplist.py
+│   └── gen_op_registration_allowlist.py
+├── generated_dirs.txt
+├── jit
+│   ├── gen_unboxing.py
+│   └── templates
+│       ├── aten_schema_declarations.cpp
+│       └── external_functions_codegen_template.cpp
+├── setup_helpers
+│   ├── generate_code.py
+│   ├── gen.py
+│   ├── gen_unboxing.py
+│   ├── gen_version_header.py
+
+```
+
+我们先看几个重要的文件：
+
+- generated_dirs.txt： 这个文件里列举了编译过程中自动生成的代码所在的路径，当前版本中该文件的内容如下：
+``` Python
+torch/csrc/autograd/generated/      # 自动微分相关的代码
+torch/csrc/jit/generated/           # JIT相关的代码
+build/aten/src/ATen                 # aten算子相关的代码
+```
+- setup_helpers/generate_code.py: 这个文件中函数generate_code()是代码生成的入口。等下我们会沿着这个入口梳理代码生成的逻辑。
+- 
+
+### 代码生成的流程
+
+代码生成沿着以下的流程进行：
+<ol>
+<li> 调用tools/autograd/gen_autograd.py中的函数gen_autograd_python，这个函数输入参数
+NATIVE_FUNCTIONS_PATH = "aten/src/ATen/native/native_functions.yaml"
+TAGS_PATH = "aten/src/ATen/native/tags.yaml"
+    <ol>
+    <li> native_functions_path: native functions的定义
+    <li> derivatives.yaml: 这里定义了算子及其相应微分算子的关系
+    <li> templates: 
+    <li> deprecated.yaml: 定义了哪些是已经过时，不再建议使用的算子
+    </ol>
+    之后会调用函数gen_python_functions.gen()执行代码生成的操作。这个函数用于生成ATen算子的Python接口，包括torch._C下nn、_fft、_linalg、_sparse以及_special下对象的方法。这个函数的工作流程如下：
+    <ol>
+    <li>解析native_functions.yaml和tags.yaml的内容，生成native函数列表
+    <li>根据函数定义生成函数的签名
+    <li>读取deprecated.yaml，得到过时的函数及相应签名
+    <li>调用FileManager.write_with_template()生成对应函数的代码，生成的过程中要用到模板文件 python_variable_methods.cpp。
+    在模板文件python_variable_methods中，包含了很多手写的代码，包括头文件定义和函数定义，中间留了一些位置，用于放置生成的代码。比如如下的片段：
+
+```C++
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+// ${generated_comment}
+
+// ...
+#include <stdexcept>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#else
+$ops_headers
+#endif
+
+//...
+
+// generated methods start here
+
+${py_methods}
+
+static PyObject * THPVariable_bool_scalar(PyObject* self, PyObject* args) {
+
+//...
+
+  {"tolist", THPVariable_tolist, METH_NOARGS, NULL},
+  {"type", castPyCFunctionWithKeywords(THPVariable_type), METH_VARARGS | METH_KEYWORDS, NULL},
+  ${py_method_defs}
+  {NULL}
+};
+```
+
+其中的关键变量是py_methods，这个变量包含了很多函数的定义，其中每个函数是根据模板字符串生成的，如下是其中一种模板：
+```C++
+// tools/autograd/gen_python_functions.py
+
+PY_VARIABLE_METHOD_VARARGS = CodeTemplate(
+    r"""\
+// ${name}
+static PyObject * ${pycname}(PyObject* self_, PyObject* args, PyObject* kwargs)
+{
+  ${method_header}
+  static PythonArgParser parser({
+    ${signatures}
+  }, /*traceable=*/${traceable});
+
+  ParsedArgs<${max_args}> parsed_args;
+  auto _r = parser.parse(${self_}, args, kwargs, parsed_args);
+  ${check_has_torch_function}
+  switch (_r.idx) {
+    ${dispatch}
+  }
+  ${method_footer}
+}
+
+"""
+)
+```
+
+根据这个模板生成的函数代码大概是下面这样：
+```C++
+//torch/csrc/autograd/generated/python_variable_methods.cpp
+
+static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwargs)
+{
+  HANDLE_TH_ERRORS
+  const Tensor& self = THPVariable_Unpack(self_);
+  static PythonArgParser parser({
+    "add(Scalar alpha, Tensor other)|deprecated",
+    "add(Tensor other, *, Scalar alpha=1)",
+  }, /*traceable=*/true);
+
+  ParsedArgs<2> parsed_args;
+  auto _r = parser.parse(self_, args, kwargs, parsed_args);
+  if(_r.has_torch_function()) {
+    return handle_torch_function(_r, self_, args, kwargs, THPVariableClass, "torch.Tensor");
+  }
+  switch (_r.idx) {
+    case 0: {
+      // [deprecated] aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+
+      auto dispatch_add = [](const at::Tensor & self, const at::Scalar & alpha, const at::Tensor & other) -> at::Tensor {
+        pybind11::gil_scoped_release no_gil;
+        return self.add(other, alpha);
+      };
+      return wrap(dispatch_add(self, _r.scalar(0), _r.tensor(1)));
+    }
+    case 1: {
+      // aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+
+      auto dispatch_add = [](const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) -> at::Tensor {
+        pybind11::gil_scoped_release no_gil;
+        return self.add(other, alpha);
+      };
+      return wrap(dispatch_add(self, _r.tensor(0), _r.scalar(1)));
+    }
+  }
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+```
+
+    <li>
+    </ol>
+
+
+<li>
+</ol>
+
 
 ## 生成的库
 
