@@ -593,8 +593,6 @@ THP* = TorcH Python
 
 
 
-PyTorch会使用tools/setup_helpers/generate_code.py来动态生成Torch层面相关的一些代码，这部分动态生成的逻辑将不在本文阐述，你可以关注Gemfield专栏的后续文章。
-
 C10目前最具代表性的一个class就是TensorImpl了，它实现了Tensor的最基础框架。继承者和使用者有：
 
 
@@ -634,9 +632,6 @@ third_party/ideep
 ## 代码生成
 
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
-
-
-```
 
 代码生成相关的工具在tools目录下：
 ```Bash
@@ -699,6 +694,14 @@ build/aten/src/ATen                 # aten算子相关的代码
 
 ### 代码生成的流程
 
+generate_code.py主要做三件事情：
+- 生成pybindings，也就是算子的Python接口
+- 生成libtorch
+- 生成annotated
+
+<img src="../images/code_generation.png" />
+
+#### 生成pybindings
 代码生成沿着以下的流程进行：
 <ol>
 <li> 调用tools/autograd/gen_autograd.py中的函数gen_autograd_python，这个函数输入参数
@@ -716,8 +719,12 @@ TAGS_PATH = "aten/src/ATen/native/tags.yaml"
     <li>根据函数定义生成函数的签名
     <li>读取deprecated.yaml，得到过时的函数及相应签名
     <li>调用FileManager.write_with_template()生成对应函数的代码，生成的过程中要用到模板文件 python_variable_methods.cpp。
-    在模板文件python_variable_methods中，包含了很多手写的代码，包括头文件定义和函数定义，中间留了一些位置，用于放置生成的代码。比如如下的片段：
 
+
+native_functions.yaml文件中，
+
+
+在模板文件python_variable_methods中，包含了很多手写的代码，包括头文件定义和函数定义，中间留了一些位置，用于放置生成的代码。比如如下的片段：
 ```C++
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 // ${generated_comment}
@@ -775,6 +782,12 @@ static PyObject * ${pycname}(PyObject* self_, PyObject* args, PyObject* kwargs)
 )
 ```
 
+其中每个变量都是根据原始的native_functions.yaml中的函数定义生成的，例如对于
+```Python
+def get_pycname(name: BaseOperatorName) -> str:
+    return f"THPVariable_{name}"
+```
+
 根据这个模板生成的函数代码大概是下面这样：
 ```C++
 //torch/csrc/autograd/generated/python_variable_methods.cpp
@@ -824,6 +837,9 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
 
 <li>
 </ol>
+
+#### 生成libtorch
+#### 生成annotated
 
 
 ## 生成的库

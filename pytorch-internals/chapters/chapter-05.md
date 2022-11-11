@@ -1229,7 +1229,7 @@ THPVariable_add ->
 
 很多原生算子的模板定义在native_functions.yaml中，比如sigmoid函数：
 
-```
+```yaml
 # aten/src/ATen/native/native_functions.yaml
 
 - func: sigmoid(Tensor self) -> Tensor
