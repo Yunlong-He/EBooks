@@ -2,10 +2,13 @@
 # 第四章 PyTorch的编译
 
 ## 主要内容
-- PyTorch的编译过程
-- setup.py的结构
-- 代码生成过程
-- 生成的二进制包
+- [环境准备](#环境准备)
+- [编译步骤](#编译步骤)
+- [编译过程解析](#编译过程解析)
+- [代码生成](#代码生成)
+- [编译生成文件](#编译生成文件)
+- [常见编译问题](#常见编译问题)
+- [参考](#参考)
 
 ## 环境准备
 
@@ -219,7 +222,7 @@ building 'torch._dl' extension
 -------------------------------------------------------------------------
 ```
 
-## PyTorch的setup.py
+## 编译过程解析
 
 参考 https://blog.csdn.net/Sky_FULLl/article/details/125652654
 
@@ -571,64 +574,7 @@ if(USE_DEPLOY)
 endif()
 ```
 
-## PyTorch 动态代码生成
 
-参考 https://zhuanlan.zhihu.com/p/59425970
-参考 https://zhuanlan.zhihu.com/p/55966063
-
-PyTorch代码主要包括三部分：
-- <b>C10</b>. C10是Caffe Tensor Library的缩写。PyTorch目前正在将代码从ATen/core目录下迁移到C10中，目前存放的都是最核心、精简的、基础的Tensor函数和接口。
-- <b>ATen</b>，ATen是A TENsor library for C++11的缩写，是PyTorch的C++ tensor library。ATen部分有大量的代码是来声明和定义Tensor运算相关的逻辑的，除此之外，PyTorch还使用了aten/src/ATen/gen.py来动态生成一些ATen相关的代码。ATen基于C10。
-- <b>Torch</b>，部分代码仍然在使用以前的快要进入历史博物馆的Torch开源项目，比如具有下面这些文件名格式的文件：
-```text
-TH* = TorcH
-THC* = TorcH Cuda
-THCS* = TorcH Cuda Sparse (now defunct)
-THCUNN* = TorcH CUda Neural Network (see cunn)
-THD* = TorcH Distributed
-THNN* = TorcH Neural Network
-THS* = TorcH Sparse (now defunct)
-THP* = TorcH Python
-```
-
-
-
-C10目前最具代表性的一个class就是TensorImpl了，它实现了Tensor的最基础框架。继承者和使用者有：
-
-
-
-### 编译第三方的库
-
-```bash
-#Facebook开源的cpuinfo，检测cpu信息的
-third_party/cpuinfo
-
-#Facebook开源的神经网络模型交换格式，
-#目前Pytorch、caffe2、ncnn、coreml等都可以对接
-third_party/onnx
-
-#FB (Facebook) + GEMM (General Matrix-Matrix Multiplication)
-#Facebook开源的低精度高性能的矩阵运算库，目前作为caffe2 x86的量化运算符的backend。
-third_party/fbgemm
-
-#谷歌开源的benchmark库
-third_party/benchmark
-
-#谷歌开源的protobuf
-third_party/protobuf
-
-#谷歌开源的UT框架
-third_party/googletest
-
-#Facebook开源的面向移动平台的神经网络量化加速库
-third_party/QNNPACK
-
-#跨机器训练的通信库
-third_party/gloo
-
-#Intel开源的使用MKL-DNN做的神经网络加速库
-third_party/ideep
-```
 ## 代码生成
 
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
@@ -842,7 +788,7 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
 #### 生成annotated
 
 
-## 生成的库
+## 编译生成文件
 
 <img src="../images/compiled_libraries.png"/>
 
@@ -887,7 +833,7 @@ $ ldd ./_C.cpython-37m-x86_64-linux-gnu.so
 	libmkl_core.so => not found
 ```
 
-## 常见问题
+## 常见编译问题
 
 - submodule没有下载完整
   一个简单的处理办法是删除third_party下的相关目录，然后手动git clone即可。相关的git url定义在.submodule以及.gi/config中
@@ -924,6 +870,66 @@ $ ldd ./_C.cpython-37m-x86_64-linux-gnu.so
 如果只是在编译Debug版本时出现，可能是和优化编译选项有冲突，因为优化编译选项-O1 -O2 -O3可能会重新排列代码导致代码对应出现问题，排查真正的问题非常困难，建议简单处理，对出现问题的编译部分去掉-g选项或者-O 选项。
 
 PyTorch的编译由setup.py发起，但真正执行编译时，相关的命令写在build/build.ninja里，只要在这个文件里修改相关的编译参数，再重新启动编译即可。
+
+
+## PyTorch 动态代码生成
+
+参考 https://zhuanlan.zhihu.com/p/59425970
+参考 https://zhuanlan.zhihu.com/p/55966063
+
+PyTorch代码主要包括三部分：
+- <b>C10</b>. C10是Caffe Tensor Library的缩写。PyTorch目前正在将代码从ATen/core目录下迁移到C10中，目前存放的都是最核心、精简的、基础的Tensor函数和接口。
+- <b>ATen</b>，ATen是A TENsor library for C++11的缩写，是PyTorch的C++ tensor library。ATen部分有大量的代码是来声明和定义Tensor运算相关的逻辑的，除此之外，PyTorch还使用了aten/src/ATen/gen.py来动态生成一些ATen相关的代码。ATen基于C10。
+- <b>Torch</b>，部分代码仍然在使用以前的快要进入历史博物馆的Torch开源项目，比如具有下面这些文件名格式的文件：
+```text
+TH* = TorcH
+THC* = TorcH Cuda
+THCS* = TorcH Cuda Sparse (now defunct)
+THCUNN* = TorcH CUda Neural Network (see cunn)
+THD* = TorcH Distributed
+THNN* = TorcH Neural Network
+THS* = TorcH Sparse (now defunct)
+THP* = TorcH Python
+```
+
+
+
+C10目前最具代表性的一个class就是TensorImpl了，它实现了Tensor的最基础框架。继承者和使用者有：
+
+
+
+### 编译第三方的库
+
+```bash
+#Facebook开源的cpuinfo，检测cpu信息的
+third_party/cpuinfo
+
+#Facebook开源的神经网络模型交换格式，
+#目前Pytorch、caffe2、ncnn、coreml等都可以对接
+third_party/onnx
+
+#FB (Facebook) + GEMM (General Matrix-Matrix Multiplication)
+#Facebook开源的低精度高性能的矩阵运算库，目前作为caffe2 x86的量化运算符的backend。
+third_party/fbgemm
+
+#谷歌开源的benchmark库
+third_party/benchmark
+
+#谷歌开源的protobuf
+third_party/protobuf
+
+#谷歌开源的UT框架
+third_party/googletest
+
+#Facebook开源的面向移动平台的神经网络量化加速库
+third_party/QNNPACK
+
+#跨机器训练的通信库
+third_party/gloo
+
+#Intel开源的使用MKL-DNN做的神经网络加速库
+third_party/ideep
+```
 
 ## 参考
 

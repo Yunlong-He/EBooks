@@ -1,6 +1,10 @@
 # PyTorch引擎的主要模块及初始化
 
 ## 主要内容
+- [PyTorch的核心模块](#PyTorch的核心模块)
+- [PyTorch的C++扩展模块初始化](#PyTorch的C++扩展模块初始化)
+- [Torch函数库的初始化](#Torch函数库的初始化)
+
 
 本章对PyTorch的整体架构做了初步的分析，这部分也是理解PyTorch核心引擎工作机制的关键部分，在这里我们力图回答以下几个问题：
 <ol>
@@ -184,7 +188,7 @@ PyObject* initModule() {
 }
 ```
 
-## Torch 函数库的初始化
+## Torch函数库的初始化
 
 在Python层面，模块torch提供了非常多的函数，比如torch.abs()，torch.randn()， torch.ones()等等，在初始化_C模块的时候，这些函数也被注册到_C模块中。
 
