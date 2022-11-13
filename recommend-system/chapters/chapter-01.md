@@ -8,11 +8,11 @@
 
 常见的特征之间的关系如下图：
 
-<img src='../image/4.png'>
+<img src='../images/4.png'>
 
 常见的分析方法如下图：
 
-<img src='../image/5.png'>
+<img src='../images/5.png'>
 
 ## 常用特征相关性分析方法
 
@@ -62,11 +62,11 @@ $$g(D, A) = H(D) - H(D|A)$$
 
 C4.5中采用的方法是：测试样本在该属性值上有缺失值，那么就同时探查（计算）所有分支，然后算每个类别的概率，取概率最大的类别赋值给该样本。
 
-<img src='../image/2.png'>
+<img src='../images/2.png'>
 
 注意，编号12的样本属性outlook上有缺失值，我们基于上面介绍的构造决策树的方法来构造一颗决策树（C4.5用信息增益率，除此之外，构造方法与上述方法一致），构造出来的决策树为：
 
-<img src='../image/3.png'>
+<img src='../images/3.png'>
 
 上图中，红色数字表示样本编号，括号内的值表示样本12的权重。叶结点中的数值（N/E），比如no(3.38/0.38)表示这个叶子节点被标记为no也就是don't play，3.38=1+1+0.38，编号1,2的样本没有缺失值，权重为1进来的，编号12进入到这个叶结点时权重为0.38。
 
@@ -142,7 +142,7 @@ https://blog.csdn.net/limiyudianzi/article/details/103614869
 
 我们举一个身高和睡眠时间的例子来说明斯皮尔曼相关系数的计算方法，第一步我们需要将数据从小打到大的排列顺序并给出所属的等级，当两个数据的数值相等的时候，我们计算数值等级的平均值作为等级数，比如身高栏中，身高栏的160有两个，应该排第三名和第四名，平均下来的等级应该是3.5。同理，我们也将睡眠时间的等级进行排序，得到等级大小。之后我们计算两组数据的等级差记为d用于计算斯皮尔曼相关系数
 
-<img src='../image/6.png'>
+<img src='../images/6.png'>
 
 斯皮尔曼相关系数的具体计算方法如下：
 
@@ -168,7 +168,7 @@ Kendall（肯德尔等级）相关系数：肯德尔相关系数是一个用来�
 首先说Kendall相关系数是对于定类变量的统计，之前讲pearson是对定距变量的统计，而spearman是对定序变量的统计。
 
 比如10个病人做检查，检查结果数据如下：
-<img src='../image/7.jpg'>
+<img src='../images/7.jpg'>
 
 a身高与体重的相关性，pearson相关系数
 b身高与病情程度的相关性，spearman或者kendall相关系数
@@ -246,18 +246,18 @@ $$T a u-c=\frac{C-D}{\frac{1}{2} N^{2} \frac{M-1}{M}}$$
 
 相关系数是测量线性（皮尔逊）或 单调（Spearman和Kendall）关系。
 
-<img src='../image/8.webp' width='500'>
-<img src='../image/9.webp' width='500'>
-<img src='../image/10.webp' width='500'>
-<img src='../image/11.webp' width='500'>
+<img src='../images/8.webp' width='500'>
+<img src='../images/9.webp' width='500'>
+<img src='../images/10.webp' width='500'>
+<img src='../images/11.webp' width='500'>
 
 在线性关系中，所有相关系数均为1。
 在指数关系中，只有两个非参数相关系数为1或-1。 在对数关系中，结果与指数关系相同。
 在对称的U形关系中，所有相关系数均为零
 
-<img src='../image/12.webp' width='500'>
-<img src='../image/13.webp' width='500'>
-<img src='../image/14.webp' width='500'>
+<img src='../images/12.webp' width='500'>
+<img src='../images/13.webp' width='500'>
+<img src='../images/14.webp' width='500'>
 
 在所有情况下，Kendall相关系数的绝对值均小于其他绝对值。 可以看出，肯德尔相关性比其他相关性更为保守。
 
@@ -299,6 +299,6 @@ features=[...]
 report.show_notebook()
 ```
 
-<img src='../image/15.png' width='500'>
-<img src='../image/16.png' width='500'>
-<img src='../image/17.png' width='500'>
+<img src='../images/15.png' width='500'>
+<img src='../images/16.png' width='500'>
+<img src='../images/17.png' width='500'>
