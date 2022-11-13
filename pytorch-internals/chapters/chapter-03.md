@@ -577,7 +577,350 @@ endif()
 
 ## 代码生成
 
+### 概述
+
+### ATen 代码生成
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
+
+这部分生成的工具位于torchgen下
+```Bash
+├── api
+│   ├── autograd.py
+│   ├── cpp.py
+│   ├── dispatcher.py
+│   ├── functionalization.py
+│   ├── __init__.py
+│   ├── lazy.py
+│   ├── meta.py
+│   ├── native.py
+│   ├── python.py
+│   ├── structured.py
+│   ├── translate.py
+│   ├── types.py
+│   ├── ufunc.py
+│   └── unboxing.py
+├── BUILD.bazel
+├── BUILD.buck
+├── build.bzl
+├── code_template.py
+├── context.py
+├── decompositions
+│   └── gen_jit_decompositions.py
+├── dest
+│   ├── __init__.py
+│   ├── lazy_ir.py
+│   ├── lazy_ts_lowering.py
+│   ├── native_functions.py
+│   ├── register_dispatch_key.py
+│   └── ufunc.py
+├── gen_backend_stubs.py
+├── gen_functionalization_type.py
+├── gen_lazy_tensor.py
+├── gen.py
+├── __init__.py
+├── local.py
+├── model.py
+├── native_function_generation.py
+├── operator_versions
+│   ├── gen_mobile_upgraders_constant.py
+│   ├── gen_mobile_upgraders.py
+│   └── __init__.py
+├── packaged
+│   └── ATen
+│       ├── native
+│       │   ├── native_functions.yaml
+│       │   └── tags.yaml
+│       └── templates
+│           ├── aten_interned_strings.h
+│           ├── ATenOpList.cpp
+│           ├── CompositeViewCopyKernels.cpp
+│           ├── DispatchKeyFunction.h
+│           ├── DispatchKeyFunctions.h
+│           ├── DispatchKeyFunctions_inl.h
+│           ├── DispatchKeyNativeFunctions.cpp
+│           ├── DispatchKeyNativeFunctions.h
+│           ├── FunctionalInverses.h
+│           ├── Function.h
+│           ├── Functions.cpp
+│           ├── Functions.h
+│           ├── LazyIr.h
+│           ├── MethodOperators.h
+│           ├── NativeFunction.h
+│           ├── NativeFunctions.h
+│           ├── NativeMetaFunction.h
+│           ├── NativeMetaFunctions.h
+│           ├── Operator.h
+│           ├── Operators.cpp
+│           ├── Operators.h
+│           ├── RedispatchFunctions.cpp
+│           ├── RedispatchFunctions.h
+│           ├── RegisterBackendSelect.cpp
+│           ├── RegisterCodegenUnboxedKernels.cpp
+│           ├── RegisterDispatchKey.cpp
+│           ├── RegisterFunctionalization.cpp
+│           ├── RegisterSchema.cpp
+│           ├── RegistrationDeclarations.h
+│           ├── TensorBody.h
+│           ├── TensorMethods.cpp
+│           ├── UfuncCPU.cpp
+│           ├── UfuncCPUKernel.cpp
+│           ├── UfuncCUDA.cu
+│           ├── UnboxingFunctions.cpp
+│           └── UnboxingFunctions.h
+├── selective_build
+│   ├── __init__.py
+│   ├── operator.py
+│   └── selector.py
+├── shape_functions
+│   └── gen_jit_shape_functions.py
+├── static_runtime
+│   ├── config.py
+│   ├── generator.py
+│   ├── gen_static_runtime_ops.py
+│   └── __init__.py
+└── utils.py
+
+```
+
+这部分代码生成的入口在gen.py中，调用的时候直接调用torchgen.main()即可。其主要参数包括：
+- source-path: 缺省为aten/src/ATen，代表ATen源代码的路径
+- install_dir: 缺省为build/aten/src/ATen，代表输出的路径
+
+最终生成的文件如下：
+```Bash
+
+#build/aten/src/ATen
+CompositeExplicitAutogradFunctions.h      MetaFunctions.h          RegisterBackendSelect.cpp                RegisterQuantizedCPU.cpp
+CompositeExplicitAutogradFunctions_inl.h  MetaFunctions_inl.h      RegisterCompositeExplicitAutograd.cpp    RegisterQuantizedCUDA.cpp
+CompositeImplicitAutogradFunctions.h      MethodOperators.h        RegisterCompositeImplicitAutograd.cpp    RegisterSchema.cpp
+CompositeImplicitAutogradFunctions_inl.h  NativeFunctions.h        RegisterCPU.cpp                          RegisterSparseCPU.cpp
+CompositeViewCopyKernels.cpp              NativeMetaFunctions.h    RegisterCUDA.cpp                         RegisterSparseCsrCPU.cpp
+core                                      Operators_0.cpp          RegisterFunctionalization_0.cpp          RegisterSparseCsrCUDA.cpp
+CPUFunctions.h                            Operators_1.cpp          RegisterFunctionalization_1.cpp          RegisterSparseCUDA.cpp
+CPUFunctions_inl.h                        Operators_2.cpp          RegisterFunctionalization_2.cpp          RegisterZeroTensor.cpp
+CUDAFunctions.h                           Operators_3.cpp          RegisterFunctionalization_3.cpp          RegistrationDeclarations.h
+CUDAFunctions_inl.h                       Operators_4.cpp          RegisterFunctionalizationEverything.cpp  UfuncCPU_add.cpp
+Declarations.yaml                         OperatorsEverything.cpp  RegisterMeta.cpp                         UfuncCPUKernel_add.cpp
+FunctionalInverses.h                      Operators.h              RegisterMkldnnCPU.cpp                    UfuncCUDA_add.cu
+Functions.cpp                             ops                      RegisterNestedTensorCPU.cpp
+Functions.h                               RedispatchFunctions.h    RegisterNestedTensorCUDA.cpp
+
+#build/aten/src/ATen/core
+aten_interned_strings.h  ATenOpList.cpp  TensorBody.h  TensorMethods.cpp
+
+```
+
+<img src="../images/torchgen.png"/>
+
+在core/ATenOpList.cpp中，生成了所有op的OperatorName列表。
+```C++
+// core/core.h
+bool is_custom_op(const c10::OperatorName& opName) {
+  static std::unordered_set<std::pair<const char*, const char*>, OpNameHash, OpNameEquals> ops {
+    {"aten::_cast_Byte", ""},
+
+```
+
+在core/TensorBody.h中，生成了算子的定义：
+```C++
+// core/TensorBody.h
+namespace at {
+
+class TORCH_API Tensor: public TensorBase {
+
+  at::Tensor abc(const at::Scalar & other, const at::Scalar & alpha=1) const;
+  at::Tensor add(const at::Scalar & other, const at::Scalar & alpha=1) const;
+};
+
+namespace at {
+
+// aten::abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+inline at::Tensor Tensor::abc(const at::Scalar & other, const at::Scalar & alpha) const {
+    return at::_ops::abc_Scalar::call(const_cast<Tensor&>(*this), other, alpha);
+}
+
+// aten::add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+inline at::Tensor Tensor::add(const at::Scalar & other, const at::Scalar & alpha) const {
+    return at::_ops::add_Scalar::call(const_cast<Tensor&>(*this), other, alpha);
+}
+}
+```
+在Operators_2.cpp中，生成了处理算子分发后调用实际算子实现的代码：
+
+```C++
+// Operators_2.cpp
+
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(abc_Scalar, name, "aten::abc")
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(abc_Scalar, overload_name, "Scalar")
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(abc_Scalar, schema_str, "abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor")
+
+// aten::abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+static C10_NOINLINE c10::TypedOperatorHandle<abc_Scalar::schema> create_abc_Scalar_typed_handle() {
+  return c10::Dispatcher::singleton()
+      .findSchemaOrThrow(abc_Scalar::name, abc_Scalar::overload_name)
+      .typed<abc_Scalar::schema>();
+}
+
+// aten::abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+at::Tensor abc_Scalar::call(const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+    
+    static auto op = create_abc_Scalar_typed_handle();
+    return op.call(self, other, alpha);
+}
+
+// aten::abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+at::Tensor abc_Scalar::redispatch(c10::DispatchKeySet dispatchKeySet, const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+    
+    static auto op = create_abc_Scalar_typed_handle();
+    return op.redispatch(dispatchKeySet, self, other, alpha);
+}
+
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add_Scalar, name, "aten::add")
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add_Scalar, overload_name, "Scalar")
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add_Scalar, schema_str, "add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor")
+
+// aten::add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+static C10_NOINLINE c10::TypedOperatorHandle<add_Scalar::schema> create_add_Scalar_typed_handle() {
+  return c10::Dispatcher::singleton()
+      .findSchemaOrThrow(add_Scalar::name, add_Scalar::overload_name)
+      .typed<add_Scalar::schema>();
+}
+
+// aten::add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+at::Tensor add_Scalar::call(const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+    
+    static auto op = create_add_Scalar_typed_handle();
+    return op.call(self, other, alpha);
+}
+
+// aten::add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+at::Tensor add_Scalar::redispatch(c10::DispatchKeySet dispatchKeySet, const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+    
+    static auto op = create_add_Scalar_typed_handle();
+    return op.redispatch(dispatchKeySet, self, other, alpha);
+}
+```
+在RedispatchFunctions.h中，生成了处理算子分发后调用实际算子实现的代码：
+
+```C++
+// RedispatchFunctions.h
+
+namespace at {
+namespace redispatch {
+
+    // aten::abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+    TORCH_API inline at::Tensor abc(c10::DispatchKeySet dispatchKeySet, const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha=1) {
+        return at::_ops::abc_Scalar::redispatch(dispatchKeySet, self, other, alpha);
+    }
+    
+    // aten::add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor
+    TORCH_API inline at::Tensor add(c10::DispatchKeySet dispatchKeySet, const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha=1) {
+        return at::_ops::add_Scalar::redispatch(dispatchKeySet, self, other, alpha);
+    }
+}
+}
+```
+
+在RegisterSchema.cpp中，生成了注册算子schema的代码：
+
+```C++
+// RegisterSchema.cpp
+
+namespace at {
+TORCH_LIBRARY(aten, m) {
+
+  m.def("abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor");
+  m.def("add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor");
+
+}
+}  // namespace at
+
+```
+
+RegistrationDeclarations.h中，生成了待注册算子的定义及其schema：
+```C++
+// RegistrationDeclarations.h
+
+Tensor abc(const Tensor & self, const Scalar & other, const Scalar & alpha); // {"schema": "aten::abc.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor", "dispatch": "True", "default": "True"}
+Tensor add(const Tensor & self, const Scalar & other, const Scalar & alpha); // {"schema": "aten::add.Scalar(Tensor self, Scalar other, Scalar alpha=1) -> Tensor", "dispatch": "True", "default": "True"}
+
+```
+
+RegisterCompositeExplicitAutograd.cpp.h中，生成了算子函数的封装对象：
+```C++
+// RegisterCompositeExplicitAutograd.cpp.h
+
+namespace {
+
+at::Tensor wrapper_Scalar_abc_Scalar(const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+    // No device check
+
+  // DeviceGuard omitted
+  return at::native::abc(self, other, alpha);
+}
+
+} // anonymous namespace
+namespace {
+
+at::Tensor wrapper_Scalar_add_Scalar(const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+    // No device check
+
+  // DeviceGuard omitted
+  return at::native::add(self, other, alpha);
+}
+
+} // anonymous namespace
+
+TORCH_LIBRARY_IMPL(aten, CompositeExplicitAutograd, m) {
+
+    m.impl("abc.Scalar",
+    TORCH_FN(wrapper_Scalar_abc_Scalar));
+    
+    m.impl("add.Scalar",
+    TORCH_FN(wrapper_Scalar_add_Scalar));
+}
+
+namespace compositeexplicitautograd {
+
+at::Tensor abc(const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+return wrapper_Scalar_abc_Scalar(self, other, alpha);
+}
+
+at::Tensor add(const at::Tensor & self, const at::Scalar & other, const at::Scalar & alpha) {
+return wrapper_Scalar_add_Scalar(self, other, alpha);
+}
+
+}
+```
+
+
+
+``` Python
+# Welcome to the ATen code generator v2!  The ATen code generator is
+# responsible for parsing native_functions.yaml and then generating
+# various generated files (e.g., TypeDefault.cpp) based on the operators
+# defined in this file.  This means that the code generator knows how to
+# parse function schema, and then translate this into various C++ types
+# and boilerplate code.
+#
+# Some things to know about this file when you modify it:
+#
+# - This file has STRICT mypy typechecking.  Typecheck it with
+#   `mypy --config mypy-strict.ini` in the root source directory
+#
+# - Most of the heavy lifting lives in external modules:
+#   - 'model' has the data model for native_functions.yaml.  The classes
+#     in those file represent what you see when you look at
+#     a native_functions.yaml
+#   - 'api' has conversions for how to translate JIT schema into
+#     the various C++ APIs that the codegen interacts with.  There
+#     are in fact THREE different C++ APIs: the public C++ API,
+#     the dispatcher API, and the legacy disaptcher API.  See each
+#     of these respective files for more information
+```
+
+### 算子注册代码生成
+
 
 代码生成相关的工具在tools目录下：
 ```Bash
@@ -776,13 +1119,6 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
   END_HANDLE_TH_ERRORS
 }
 ```
-
-    <li>
-    </ol>
-
-
-<li>
-</ol>
 
 #### 生成libtorch
 #### 生成annotated
