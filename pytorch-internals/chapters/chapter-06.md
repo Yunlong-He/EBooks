@@ -15,6 +15,7 @@
 
 由于原生算子的数量非常多，处于效率和可用性的考虑，在不同的平台上可能会有实现，另外算子要支持注册到torch模块、自动微分、jit等，也造成了算子之间会有大量重复的操作，在PyTorch中，用模板的方式隐藏了这些细节，当然也带来了一定的复杂性。
 
+
 下面的内容大部分来自于aten/src/ATen/native/README.md中，英文好的小伙伴们可以自己去读最新的版本。
 
 在native_functions.yaml中有所有原生算子的声明，每个算子的格式基本如下：
@@ -69,6 +70,29 @@ Returns：返回值.
 
 
 比如sigmoid函数：
+=======
+自定义算子需要考虑很多方面的实现：
+- 算子定义在哪个，例如是Tensor.xxx()， 还是torch.xxx()
+- 算子的前向计算过程
+- 算子的反向计算过程
+- 基于AVX指令或者OneDNN的实现
+- 基于GPU的实现
+
+实现的步骤包括：
+
+<ol>
+<li> 在native_functions.yaml中增加算子"abc"的声明</li>
+  在编译的时候，会自动生成以下代码：
+  <ol>
+    <li>在python_torch_functions_2.cpp中生成“THPVariable_abc”的定义。如果有多个算子名字都叫“abc”，那么只会生成一个“THPVariable_abc”的定义，然后根据不同签名调用不同的算子实现，这就是算子调用的分发过程。注意因为原生的算子太多，pytorch将算子定义拆分成多个文件，也就是说“THPVariable_xxx”的定义可能在python_torch_functions_x.cpp中，但是为了查看方便，也可以在python_torch_functionsEverything.cpp文件中找到生成的定义（该文件仅用于查看，不会用于编译）。这个文件中的“THPVariable_abc”定义会被加入到torch_functions_shard中，并最终注册成torch.abc()方法。
+    <li>在python_variable_methods.cpp中生成“THPVariable_abc”的定义。如果有多个算子名字都叫“abc”，那么只会生成一个“THPVariable_abc”的定义，然后根据不同签名调用不同的算子实现，这就是算子调用的分发过程。这个文件中的“THPVariable_abc”定义会被加入到variable_methods中，并最终注册成Tensor.abc()方法。
+    <li>在TraceType_2.cpp中生成“abc_Scalar”的定义。从文件名上我们也可以看出这个函数是用JIT中构建计算图的。同时这个函数也会被注册到Library"Tracer"中。
+    <li>在VariableType_2.cpp中注册该算子的Autograd实现，如果未实现，Pytorch会注册缺省的实现torch::autograd::autogradNotImplementedFallback()。
+    </ol>
+<li>
+</ol>
+
+很多原生算子的模板定义在native_functions.yaml中，比如sigmoid函数：
 
 ```yaml
 # aten/src/ATen/native/native_functions.yaml

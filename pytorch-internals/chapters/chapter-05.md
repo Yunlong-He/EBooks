@@ -1089,6 +1089,12 @@ y = x + 2
 ```
 
 在调用上，依次进行如下的调用：
+- torch::autograd::THPVariable_add()函数，位于torch/csrc/autograd/generated/python_variable_methods.cpp
+- at::(anonymous namespace)::wrapper_add_Tensor()函数，位于build/aten/src/ATen/RegisterCPU.cpp
+- at::native::structured_ufunc_add_CPU::structured_ufunc_add_CPU函数，位于build/aten/src/ATen/ops/add_native.h
+- at::native::(anonymous namespace)::add_kernel()函数，位于build/aten/src/ATen/UfuncCPUKernel_add.cpp
+
+
 ```C++
 // torch/csrc/autograd/generated/python_variable_methods.cpp
 // 在这个例子中，调用时参数self_和args均不为空，但kwargs = 0x0
