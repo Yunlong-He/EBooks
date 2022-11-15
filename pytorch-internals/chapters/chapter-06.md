@@ -1,4 +1,4 @@
-
+·
 # 基于C++的算子实现
 
 ## 基本内容
@@ -15,7 +15,60 @@
 
 由于原生算子的数量非常多，处于效率和可用性的考虑，在不同的平台上可能会有实现，另外算子要支持注册到torch模块、自动微分、jit等，也造成了算子之间会有大量重复的操作，在PyTorch中，用模板的方式隐藏了这些细节，当然也带来了一定的复杂性。
 
-很多原生算子的模板定义在native_functions.yaml中，比如sigmoid函数：
+下面的内容大部分来自于aten/src/ATen/native/README.md中，英文好的小伙伴们可以自己去读最新的版本。
+
+在native_functions.yaml中有所有原生算子的声明，每个算子的格式基本如下：
+```yaml
+# aten/src/ATen/native/native_functions.yaml
+
+- func: func_name(ArgType arg0[=default], ArgType arg1[=default], ...) -> Return
+  variants: function, method
+  dispatch:
+    CPU: func_cpu
+    CUDA: func_cuda
+
+```
+下面分别介绍声明中的各个部分。
+
+### func
+
+```yaml
+- func: func_name[.overload_name](ArgType arg0[=default], ArgType arg1[=default], ...) -> Return
+```
+func声明了当前算子的名称及签名，其中ArgType代表算子参数的类型，PyTorch支持的算子参数类型有如下几种：
+- Tensor。 这里的Tensor类型，在转换后会表示为const Tensor&。有一种例外是带有inplace的，将被翻译成Tensor&。如果参数类型后边跟着“?”，如"Tensor?"，代表这个参数在Python API层面是可选的，此时被调用时，C++层面传递的是“c10:nullopt”。 虽然Tensor有很多子类型，如FloatTensor、IntTensor、HalfTensor等，但是在这里统一用Tensor表示，只不过当参数列表中有多个Tensor时，他们应该是同样类型的Tensor，比如都是FloatTensor。Tensor或者Tensor?有时候可以带一些标注信息，例如：
+  - Tensor(a) : "a"可以是使用同一个数据的多个Tensor。
+  - Tensor(a!) : "a"可以被写入
+  - Tensor(a! -> a|b)
+- Tensor[]。转换后编程C++参数类型ArrayRef<Tensor>（也就是TensorList）
+- int[]。 
+- int。相当于Python中的int类型，被转换成c++的int64_t。
+- bool
+- str。被转换成C++的c10::string_view。
+- Scalar。支持绑定到Python中的任何数字类型，包括int, float, 以及0维的Tensor。
+- Generator?。代表随机数发生器的状态。
+- bool[N] （N在1-4之间）
+- *。不转换成任何实际的参数，代表Python API中，其后的参数必须为keyword argument。
+- ?。代表这是一个Optional类型，允许在Python层面传递None。
+
+输入参数中没有Tensor的函数被称为factory function，代码生成器会进行特殊处理。如果某个factory function需要一个Tensor类型的参数，可以显式加上category_override:factory。
+
+参数名称。 参数名是有意义的，生成的python代码可能会用到这个参数名。
+
+为了方便，使用"out"标识一个出参。
+
+缺省值。 每个参数都可以有个缺省值，可以用如下方式表示：
+- 数字，例如 0, 5.0。特别的，int[2] x=2代表 int[2] x=[2,2]。
+- 数字列表，如[0, 0]
+- 布尔类型，例如True
+- 空列表
+- None，用来表示指针参数为空的情况。
+
+Returns：返回值.
+
+
+
+比如sigmoid函数：
 
 ```yaml
 # aten/src/ATen/native/native_functions.yaml

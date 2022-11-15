@@ -577,6 +577,75 @@ endif()
 
 ## 代码生成
 
+大多数研究PyTorch实现机制的开发者会把重点放在算子的实现机制上，因此在浏览代码时，会特意关注算子的源码，但是在Python的API和C++的算子实现直接，我们很难找到一条清晰的调用路径，原因一方面在于PyTorch通过dispatching机制分发算子的调用，另一方面也在与有大量的代码是在编译器阶段生成的，当然从设计上来讲这两部分也是息息相关的。
+
+如果我们比较编译前后的文件，会发现除了普通的编译生成的目标文件之外，另外生成了很多新的源文件，主要生成的文件在以下这些目录：
+
+```Bash
+./torch/csrc/autograd/generated
+./torch/csrc/lazy/generated
+./torch/include/torch/csrc/autograd/generated
+./torch/include/torch/csrc/lazy/generated
+./torch/testing/_internal/generated
+./torch/lib/python3.7/site-packages/caffe2/CMakeFiles/torch_cpu.dir/__/torch/csrc/autograd/generated
+./torch/lib/python3.7/site-packages/caffe2/CMakeFiles/torch_cpu.dir/__/torch/csrc/lazy/generated
+./torch/lib/python3.7/site-packages/caffe2/torch/CMakeFiles/torch_python.dir/csrc/autograd/generated
+./build/aten/src/ATen
+./build/aten/src/ATen/core
+./build/aten/src/ATen/native
+./build/aten/src/ATen/native/cpu
+./build/aten/src/ATen/native/quantized/cpu
+./build/caffe2/CMakeFiles/torch_cpu.dir/__/torch/csrc/autograd/generated
+./build/caffe2/CMakeFiles/torch_cpu.dir/__/torch/csrc/lazy/generated
+./build/caffe2/torch/CMakeFiles/torch_python.dir/csrc/autograd/generated
+./build/third_party/benchmark/src/generated
+./build/third_party/ideep/mkl-dnn/third_party/oneDNN/src/generated
+./build/lib.linux-x86_64-3.7/torch/include/torch/csrc/autograd/generated
+./build/lib.linux-x86_64-3.7/torch/testing/_internal/generated
+```
+后面我们会对其中关键的文件及生成过程进行介绍。
+
+### 为什么需要代码生成
+依照Pytorch podcast上的说法，使用代码生成方式的好处有：
+- 更好的语法表示，主要是指native_functions.yaml，JIT schema，derivatives.yaml这几个文件。实现算子时，除了算子本身的实现代码外，需要添加的内容很少并且很直观。
+- 更好的错误信息。如果使用C++模板，哪里出错确实很难控制，而且错误信息怎么写也是个问题。
+- 更容易组织复杂的代码。可能是因为PyTorch的架构设计的原因，从Python API到C++算子调用的路径确实很长，中间转换很多，不可避免的会有很多各种中间格式的封装，这种事本来就不适合开发者自己做。用模板也许也可以，但估计会比较繁琐。
+- 更易于调试。这个真正调试过的小伙伴会深有感触。
+
+当然代码生成也带来一些缺点：
+- 一致性差点，没有模板好。
+- 代码生成实现了一个简单版本的类型系统，但相比C++可能还是弱了一些。（这一点我也还不太理解）
+
+当然，不管是代码生成还是用模板，最终目标还是为了减少整体的代码量，以及隐藏算子开发的细节，使开发者能够将精力放到算子本身的实现逻辑上。
+
+### 代码生成的主要目标
+
+对于每一个算子，为了算子能够可用，除了算子本身的实现逻辑外，我们还需要实现下面这些功能：
+- 支持相应的Python API
+- 支持C++的前端
+- 支持自动微分
+- 将算子注册到dispatcher
+- 支持JIT
+- 其他杂七杂八的功能
+
+### 算子的声明
+
+代码生成的核心是算子的声明，PyTorch中所有的算子都定义在native_functions.yaml中，以算子torch.add(a, b, out=c)为例，其声明如下：
+```yaml
+- func: add.out(Tensor self, Tensor other, *, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
+  device_check: NoCheck   # TensorIterator
+  structured: True
+  structured_inherits: TensorIteratorBase
+  dispatch:
+    CPU, CUDA: add_out
+    SparseCPU: add_out_sparse_cpu
+    SparseCUDA: add_out_sparse_cuda
+    SparseCsrCPU: add_out_sparse_csr_cpu
+    SparseCsrCUDA: add_out_sparse_csr_cuda
+    MkldnnCPU: mkldnn_add_out
+```
+
+
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
 
 代码生成相关的工具在tools目录下：
@@ -944,4 +1013,6 @@ third_party/ideep
 <li> PyTorch 动态代码生成 https://zhuanlan.zhihu.com/p/55966063</li>
 <li> PyTorch 动态代码生成 https://zhuanlan.zhihu.com/p/59425970</li>
 <li>https://blog.csdn.net/HaoBBNuanMM/article/details/115720457</li>
+<li>https://pytorch-dev-podcast.simplecast.com/episodes/code-generation</li>
+<li>https://github.com/pytorch/pytorch/wiki/Codegen-and-Structured-Kernels</li>
 </ol>
