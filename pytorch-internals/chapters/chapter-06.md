@@ -65,8 +65,31 @@ func声明了当前算子的名称及签名，其中ArgType代表算子参数的
 - 空列表
 - None，用来表示指针参数为空的情况。
 
-Returns：返回值.
+Returns：返回值。返回值支持一下tuple和非tuple两种形式：
+```C++
+ReturnType [retarg0]
+(ReturnType [retarg0], ReturnType [retarg1], ...)
+```
+ReturnType支持以下几种：Tensor, Tensor[]，分别被翻译成C++中的Tensor和std::vector<Tensor>, 或者Tensor的tuple，翻译成std::tuple<Tensor, Tensor>
 
+必要的话，也可以扩展代码生成器以便支持新的类型。ATen的设计理念是仅支持基本类型，从而具有很好的可移植性。
+
+返回值也支持返回参数名，但不支持缺省值，也不支持optional形式的返回值。
+
+重载(Overloads)。ATen允许用同一个名称注册多个函数签名，但需要提供不同的重载名称。重载名称的格式为“函数名.重载名”。ATen建议重载名使用有实际意义的名称，以便容易记忆并且容易区分其功能。为了保持后向兼容，不要随便修改重载名。
+
+命名空间（Namespaces）。缺省情况下，所有的算子都注册在命名空间“aten”下，用户也可以将算子注册在自定义的命名空间内：
+```yaml
+- func: custom::my_op(Tensor(a) self, ...) -> Tensor(a)
+  variants: function, method
+  dispatch:
+    CPU: my_op_cpu
+    CUDA: my_op_cuda
+```
+
+### variants
+
+Variants用来控制算子的归属，根据上面例子，ATen支持两种算子的variants, function和method。 
 
 
 比如sigmoid函数：
