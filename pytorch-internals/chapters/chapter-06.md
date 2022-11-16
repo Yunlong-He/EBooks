@@ -130,8 +130,9 @@ dispatch:
 ```
 
 ATen支持的backend可以在gen.py中找到列表。下面是一些”通用“的backend：
-- CompositeExplicitAutograd。之前作为”DefaultBackend“，所有的算子都可以作为这个backend的实现，但是需要在derivatives.yaml中显示定义反向传播函数。最典型的用途是支持代理函数，例如某个函数自身做的很少，但是之后会分发到另一个函数去执行复杂的逻辑。因此注册到这个backend，相当于注册到了所有的backend，包括CPU, CUDA。注意DispatchStub只适用于CPU和CUDA，因此不应该被注册到CompositeExplicitAutograd。
-- CompositeExplicitAutogradNonFunctional。
+- CompositeExplicitAutograd。之前作为”DefaultBackend“，用于支持所有backend的算子实现的核函数，但是需要在derivatives.yaml中显示定义反向传播函数。最典型的用途是支持代理函数，例如某个函数自身做的很少，但是之后会分发到另一个函数去执行复杂的逻辑。因此注册到这个backend，相当于注册到了所有的backend，包括CPU, CUDA。注意DispatchStub只适用于CPU和CUDA，因此不应该被注册到CompositeExplicitAutograd。
+- CompositeExplicitAutogradNonFunctional。和上一个类似，但有一些限制。(1)不能用于有别名的算子。（2）内部会调用有别名的算子。一个例子是select_backward。TODO. 有待进一步描述。
+- CompositeImplicitAutograd。之前被称为Math。也是用于支持所有backend的核函数，但是其内部调用的都是支持自动微分的算子，因此这个函数也支持自动微分。这个backend用的比较少，如果没有dispatch table，缺省会将核函数注册为这个backend。
 
 
 比如sigmoid函数：
