@@ -89,7 +89,49 @@ ReturnType支持以下几种：Tensor, Tensor[]，分别被翻译成C++中的Ten
 
 ### variants
 
-Variants用来控制算子的归属，根据上面例子，ATen支持两种算子的variants, function和method。 
+Variants用来控制算子的归属，根据上面例子，ATen支持两种算子的variants, function和method。method表示该算子可以作为Tensor的成员方法使用，例如t.foo()，此时会有一个Tensor类型的参数self。function表示该算子可以作为一个函数使用，如at::foo()。 缺省情况下，ATen只会构建一个函数，
+
+### annotations
+Python的API支持一些特性，如inplace操作（如self.abs_()），以及输出参数（如torch.abs(input, out=None))。
+
+为此会有三种定义的形式：
+- abs(Tensor self) -> Tensor
+- abs_(Tensor self) -> Tensor
+- abs_out(Tensor out, Tensor self) -> Tensor
+
+ATen提供了三种annotation形式：
+- abs(Tensor self) -> Tensor， 表示总会返回一个新创建的Tensor
+- abs_(Tensor(a!) self) -> Tensor(a!) self这个Tensor既是输入也是输出。
+- abs(Tensor self, *, Tensor(a!) out) -> Tensor(a!)
+
+一种特殊情况是：
+- transpose(Tensor(a) self, int dim0, int dim1) -> Tensor(a)
+代表参数self会被返回，但其数据不会被改变。
+
+另一种情况和上一个例子类似，但输入输出的是一个Tensor列表。
+- func: chunk(Tensor(a -> *) self, int chunks, int dim=0) -> Tensor(a)[]
+
+如果开发者错误地使用了annotation，ATen代码生成器会在生成阶段报告错误。
+
+### dispatch
+dispatch定义了转发的规则，例如：
+
+```yaml
+dispatch:
+    CPU: func_cpu
+    CUDA: func_cuda
+```
+定义了在CPU的backend下，将调用转发给函数func_cpu，而在CUDA的backend下转发给函数func_cuda。
+
+和前面func的定义类似，dispatch的目标函数也支持命名空间,当前最多支持二级命名空间，例如下面例子代表转发给命名空间custom::ns::native的函数（其中native是自动加上的）：
+```yaml
+dispatch:
+    CPU: custom::ns::func_cpu
+```
+
+ATen支持的backend可以在gen.py中找到列表。下面是一些”通用“的backend：
+- CompositeExplicitAutograd。之前作为”DefaultBackend“，所有的算子都可以作为这个backend的实现，但是需要在derivatives.yaml中显示定义反向传播函数。最典型的用途是支持代理函数，例如某个函数自身做的很少，但是之后会分发到另一个函数去执行复杂的逻辑。因此注册到这个backend，相当于注册到了所有的backend，包括CPU, CUDA。注意DispatchStub只适用于CPU和CUDA，因此不应该被注册到CompositeExplicitAutograd。
+- CompositeExplicitAutogradNonFunctional。
 
 
 比如sigmoid函数：
