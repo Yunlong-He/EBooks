@@ -193,7 +193,129 @@ TODO
 
 ### Structured Kernels
 
+如果我们对pytorch进行调试，并且计算中是两个Tensor的相加，经过从Python API到C++的API，以及多次的分发之后，会进入到下面这个函数：
+```C++
+at::Tensor wrapper_add_Tensor(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  structured_add_out_functional op;
+  op.meta(self, other, alpha);
+  op.impl(self, other, alpha, op.outputs_[0]);
+  return std::move(op.outputs_[0]);
+}
 
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+  m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
+}
+```
+
+这个函数里中调用的meta()和impl()是定义在其他地方的。这是因为add函数被定义为structured kernel。structured kernel是PyTorch实现算子的新方式。
+
+基于structured kernel实现一个算子，需要实现两个函数：
+- ”meta"函数，用来确保输入参数具有正确的shape和dtype，并计算出输出Tensor的size
+- "impl"函数，执行真正的计算过程，每个backend都有对应的实现。
+
+TODO: 另外考虑到算子定义有多种变体（包括inplace和out版本），相应的也都有各自的meta()和impl()实现。
+
+我们看一下算子add的meta及impl的实现：
+
+```C++
+// expands to structured_add_Tensor::meta() { ... }
+TORCH_META_FUNC2(add, Tensor) (
+  const Tensor& self, const Tensor& other, const Scalar& alpha
+) {
+  build_borrowing_binary_op(maybe_get_output(), self, other);
+  native::alpha_check(dtype(), alpha);
+}
+
+// expands to structured_add_out::impl() { ... }
+TORCH_IMPL_FUNC(add_out) (
+  const Tensor& self, const Tensor& other, const Scalar& alpha, const Tensor& result
+) {
+  add_stub(device_type(), *this, alpha);
+  TORCH_INTERNAL_ASSERT(result.scalar_type() == output().dtype());
+}
+```
+
+这两个函数的定义是由代码生成器生成的：
+
+```C++
+// NativeMetaFunctions.h
+// namespace at::meta
+struct TORCH_API structured_add_Tensor : public TensorIteratorBase {
+    void meta(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha);
+};
+
+// NativeFunctions.h
+// namespace at::native
+struct TORCH_API structured_add_out : public at::meta::structured_add_Tensor {
+    void impl(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, const at::Tensor & out);
+};
+```
+
+但是structured kernel是如何使用的呢？代码生成器生成的文件中，RegisterCPU.cpp包含了答案：
+
+```C++
+// functional version
+at::Tensor wrapper_add_Tensor(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  structured_add_out_functional op;
+  op.meta(self, other, alpha);
+  op.impl(self, other, alpha, op.outputs_[0]);
+  return std::move(op.outputs_[0]);
+}
+
+// inplace version
+at::Tensor & wrapper_add__Tensor(at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  structured_add_out_inplace op(self);
+  op.meta(self, other, alpha);
+  op.impl(self, other, alpha, op.outputs_[0]);
+  return self;
+}
+
+// out= version
+at::Tensor & wrapper_add_out_out(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, at::Tensor & out) {
+  structured_add_out_out op(out);
+  op.meta(self, other, alpha);
+  op.impl(self, other, alpha, op.outputs_[0]);
+  return out;
+}
+
+// registering the 3 kernels above to the dispatcher, under the CPU Dispatch Key.
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+  ...
+  m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
+  m.impl("add.out", TORCH_FN(wrapper_add_out_out));
+  m.impl("add_.Tensor", TORCH_FN(wrapper_add__Tensor));
+}
+```
+
+当然在同一个文件中，我们还可以找到对应的实现:
+
+```C++
+struct structured_add_out_functional final : public at::native::structured_add_out {
+
+    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
+                    TensorOptions options, DimnameList names) override {
+
+        if (strides.empty()) {
+            outputs_[output_idx] = at::native::empty_cpu(sizes, optTypeMetaToScalarType(options.dtype_opt()), options.layout_opt(), options.device_opt(), optio
+        } else {
+            // TODO: assert options.memory_format_opt() is nullopt (debug only?)
+            outputs_[output_idx] = at::native::empty_strided_cpu(sizes, strides, optTypeMetaToScalarType(options.dtype_opt()), options.layout_opt(), options.de
+        }
+
+        if (!names.empty()) {
+          namedinference::propagate_names(outputs_[output_idx], names);
+        }
+        // super must happen after, so that downstream can use maybe_get_output
+        // to retrieve the output
+        at::native::structured_add_out::set_output(output_idx, sizes, strides, options, names);
+    }
+
+    const Tensor& maybe_get_output(int64_t output_idx) override {
+        return outputs_[output_idx];
+    }
+    std::array<Tensor, 1> outputs_;
+};
+```
 
 比如sigmoid函数：
 =======
