@@ -1,18 +1,19 @@
 
 # 目录
 
-- 前言
-- 第1章 PyTorch程序的基本结构及概念
+- 0 - 前言
+
+- 0 - 第1章 PyTorch程序的基本结构及概念
     - 深度学习的发展历史
     - PyTorch的发展历史
     - 
-- 第2章 初识PyTorch
+- 0 - 第2章 初识PyTorch
     - 深度学习的基本概念
     - PyTorch的设计原则（官网）
     - PyTorch的整体架构
     - PyTorch的源代码结构
     
-- 第3章 PyTorch的编译过程
+- 4 - 第3章 PyTorch的编译过程
     - 编译环境准备
         - 基于本机的编译
         - 基于docker的编译
@@ -24,30 +25,43 @@
         - setup.py的结构
         - 基于cmake的编译体系
     - 常见编译错误及处理
-- 第4章 PyTorch的运行时架构
+- 0 - 第4章 PyTorch的算子体系
+    - torch模块中的函数
+    - Tensor算子
+    - torch.nn的算子
+    - torch.nn.functional
+    - torch.optim
+    - torch.autograd
+    - torch.multiprocessing
+    - torch.cuda
+    - torch.legacy
+    - torch.utils.ffi
+    - torch.utils.data
+    - torch.utils.model_zoo
+    - 算子的注册过程
+    - 算子的调用过程
+- 1 - 第5章 PyTorch的运行时架构
     - 一个简单的深度学习模型训练过程
     - PyTorch的核心数据结构
     - PyTorch的启动过程
         - PyTorch的C++扩展模块初始化
         - Torch 函数库的初始化
-- 第5章 PyTorch的算子体系
-    - torch模块中的函数
-    - Tensor算子
-    - torch.nn的算子
-    - 算子的注册过程
-    - 算子的调用过程
-- 第6章 基于C++的算子实现
+- 4 - 第6章 Codegen - 代码生成器
+    - 算子代码生成
+    - Python API代码生成
+- 1 - 第7章 基于C++的算子实现
     - 一个简单的例子
     - 算子调用的过程
     - Dispatcher机制
     - 如何注册新的算子
     - 参考：在PyTorch中实现新的算子
-- 第7章 自动微分
+- 0 - 第8章 自动微分
     - 自动微分的理论基础
     - 自动微分相关的核心数据结构
     - 自动微分的函数生成
     - 自动微分的执行过程
-- 第8章 数据加载
+- 0 - 第9章 JIT
+- 4 - 第10章 数据加载
     - 数据加载的设计
     - 数据读取
     - 数据采样
@@ -56,25 +70,23 @@
     - 锁页内存
     - 数据加载到GPU
     - 数据分发
-- 第9章 优化器
-- 第10章 分布式训练
+- 0 - 第11章 分布式训练
     - 数据并行与模型并行
     - 常用的分布式训练方法
     - Horovod
     - 单机多卡
     - NCCL
     - DDP
-- 第11章 JIT
-- 第12章 典型模型
-- 第13章 性能优化
+- 0 - 第12章 性能优化
     - 硬件优化
     - 基于CPU的优化
     - 基于GPU的优化
     - XLR
     - 混合精度训练
     - 梯度checkpoint
-- 第14章 torch.fx
-- 第15张 tensorxpr和MLIR
+- 0 - 第13章 MLIR
+- 0 - 第14章 torch.fx
+- 0 - 第15张 tensorxpr
 
 
 
