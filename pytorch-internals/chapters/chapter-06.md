@@ -134,6 +134,66 @@ ATen支持的backend可以在gen.py中找到列表。下面是一些”通用“
 - CompositeExplicitAutogradNonFunctional。和上一个类似，但有一些限制。(1)不能用于有别名的算子。（2）内部会调用有别名的算子。一个例子是select_backward。TODO. 有待进一步描述。
 - CompositeImplicitAutograd。之前被称为Math。也是用于支持所有backend的核函数，但是其内部调用的都是支持自动微分的算子，因此这个函数也支持自动微分。这个backend用的比较少，如果没有dispatch table，缺省会将核函数注册为这个backend。
 
+如果一个函数注册到了这几个Compsite backend，并且其实现上也只调用了支持所有backend的函数，那么这个函数也支持所有的backend，例如：
+```C++
+at::Tensor my_op(const Tensor& self, const Tensor& other) {
+  return self + 2 * other;
+}
+```
+其中算子"+"和"*"的求导公式都已知，那么将这个函数注册到Compsite backend后，也会支持自动微分，PyTorch会根据链式法则自动构建反向传播函数。
+
+是否需要使用隐式或显式的自动微分，可遵循如下原则：
+1. 对于由现有函数组合起来的函数，尽可能使用CompositeImplicitAutograd。
+2. 如果考虑性能或者计算稳定性等原因，需要自己实现梯度计算，可以使用CompositeExplicitAutograd。自己实现的梯度计算函数可以作为Alias放在Autograd下，或者注册到AutogradCPU的key上。
+3. 如果希望对特定的backend实现核函数，可以注册到对应的dispatch key上
+
+需要注意的是：CompositeImplicitAutograd核函数注册的时候，不会指定"dispatch"，因此当增加一个特定后端的核函数时，必须同时添加一个CompositeImplicitAutograd条目，以便旧的函数仍然可以用于其他backend。TODO,举个例子
+
+### device_guard
+
+为了保证核函数能够运行在合适的设备上（该设备由第一个Tensor参数所在的设备来确定），缺省情况ATen代码生成器会生成DeviceGuard的调用。因此大多数情况下开发者不需要自己设置核函数运行的设备。
+
+特殊情况下，例如你的核函数只是调用了一个已经设置了device guard的函数，或者你的核函数不需要和设备交互，这时可以关闭device guard：
+```yaml
+device_guard: False
+```
+
+### device_check
+缺省情况下，ATen代码生成器会生成设备检查代码，以保证传给核函数的参数都在同一个设备上。但是有时候没有必要做这种检查，例如有些函数本身就允许运行在多个设备上，这时可以禁用device_check:
+```yaml
+device_check: NoCheck
+```
+
+### manual_kernel_registration
+当设置了这个开关后，代码生成器就不会生成注册算子到TypeDefault上（TypeDefault能够捕获所有的dispatch key）。因此"dispatch"和”manual_kernel_registration“是互斥的。
+```yaml
+manual_kernel_registration: True
+```
+一般情况下开发者不需要使用这个开关。
+
+### use_const_ref_for_mutable_tensors
+设置这个开关之后，代码生成器会生成类似”const Tensor&“的定义，表明相应的Tensor参数不需要修改。
+```yaml
+use_const_ref_for_mutable_tensors: True
+```
+
+## autogen
+TODO
+
+### 原生算子的C++实现
+
+原生算子的实现位于native目录下的C++文件中。除了cuda目录下的文件，PyTorch对于该函数实现在哪个文件中并没有要求，只要函数的签名和和ATen生成的保持一致即可。
+
+如果实现的算子本身支持自动微分，则不需要额外实现自动微分函数，否则需要自己写一个foo_backward函数，并将对应关系加到tools/autograd/derivatives.yaml中。
+
+确定核函数支持的backend包括以下步骤：
+1. 确认核函数是否支持所有backend
+2. 确认核函数是否支持autograd
+3. 确定dispatch table符合预期
+
+### Structured Kernels
+
+
 
 比如sigmoid函数：
 =======
