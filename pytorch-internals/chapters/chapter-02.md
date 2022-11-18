@@ -4,6 +4,7 @@
 - [PyTorch的设计原则](#PyTorch的设计原则)
 - [PyTorch的整体架构](#PyTorch的整体架构)
 - [PyTorch的源代码结构](#PyTorch的源代码结构)
+- [第三方依赖](#第三方依赖)
 
 
 ## PyTorch的设计原则
@@ -41,7 +42,7 @@ torch
 
 ```
 
-## C10
+### C10
 C10，来自于Caffe Tensor Library的缩写。这里存放的都是最基础的Tensor库的代码，可以运行在服务端和移动端。PyTorch目前正在将代码从ATen/core目录下迁移到C10中。C10的代码有一些特殊性，体现在这里的代码除了服务端外还要运行在移动端，因此编译后的二进制文件大小也很关键，因此C10目前存放的都是最核心、精简的、基础的Tensor函数和接口。
 
 C10目前最具代表性的一个class就是TensorImpl了，它实现了Tensor的最基础框架。继承者和使用者有：
@@ -56,13 +57,13 @@ c10::make_intrusive<at::TensorImpl, at::UndefinedTensorImpl>
 
 值得一提的是，C10中还使用/修改了来自llvm的SmallVector，在vector元素比较少的时候用以代替std::vector，用以提升性能; 
 
-## ATen
+### ATen
 ATen，来自于 A TENsor library for C++11的缩写；PyTorch的C++ tensor library。ATen部分有大量的代码是来声明和定义Tensor运算相关的逻辑的，除此之外，PyTorch还使用了aten/src/ATen/gen.py来动态生成一些ATen相关的代码。ATen基于C10，Gemfield本文讨论的正是这部分；
 
-## Caffe2
+### Caffe2
 为了复用，2018年4月Facebook宣布将Caffe2的仓库合并到了PyTorch的仓库,从用户层面来复用包含了代码、CI、部署、使用、各种管理维护等。caffe2中network、operators等的实现，会生成libcaffe2.so、libcaffe2_gpu.so、caffe2_pybind11_state.cpython-37m-x86_64-linux-gnu.so（caffe2 CPU Python 绑定）、caffe2_pybind11_state_gpu.cpython-37m-x86_64-linux-gnu.so（caffe2 CUDA Python 绑定），基本上来自旧的caffe2项目)
 
-## Torch
+### Torch
 
 Torch，部分代码仍然在使用以前的快要进入历史博物馆的Torch开源项目，比如具有下面这些文件名格式的文件：
 
@@ -78,6 +79,39 @@ THP* = TorcH Python
 ```
 
 PyTorch会使用tools/setup_helpers/generate_code.py来动态生成Torch层面相关的一些代码，这部分动态生成的逻辑将不在本文阐述，你可以关注Gemfield专栏的后续文章。
+
+### 第三方依赖
+
+```bash
+#Facebook开源的cpuinfo，检测cpu信息的
+third_party/cpuinfo
+
+#Facebook开源的神经网络模型交换格式，
+#目前Pytorch、caffe2、ncnn、coreml等都可以对接
+third_party/onnx
+
+#FB (Facebook) + GEMM (General Matrix-Matrix Multiplication)
+#Facebook开源的低精度高性能的矩阵运算库，目前作为caffe2 x86的量化运算符的backend。
+third_party/fbgemm
+
+#谷歌开源的benchmark库
+third_party/benchmark
+
+#谷歌开源的protobuf
+third_party/protobuf
+
+#谷歌开源的UT框架
+third_party/googletest
+
+#Facebook开源的面向移动平台的神经网络量化加速库
+third_party/QNNPACK
+
+#跨机器训练的通信库
+third_party/gloo
+
+#Intel开源的使用MKL-DNN做的神经网络加速库
+third_party/ideep
+```
 
 ## 参考
 - PyTorch ATen代码的动态生成 https://zhuanlan.zhihu.com/p/55966063
