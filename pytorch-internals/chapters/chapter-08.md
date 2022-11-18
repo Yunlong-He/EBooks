@@ -1,380 +1,1013 @@
+# 自动微分
 
-# 数据加载
+## Index
+- 理论知识
+- 梯度的保存
+- 梯度的计算
+- 反向传播
 
-## 主要内容
-- [数据加载的设计](#数据加载的设计)
-- [数据读取](#数据读取)
-- [数据采样](#数据采样)
-- [数据预处理及数据增强](#数据预处理及数据增强)
-- [锁页内存](#锁页内存)
-- [数据加载到GPU](#数据加载到GPU)
-- [数据分发](#数据分发)
-- [模型训练中的数据集](#模型训练中的数据集)
+- [梯度的初步认识](#梯度的初步认识)
+- [关于梯度的基本理论](#关于梯度的基本理论)
+- [PyTorch中梯度的计算过程](#PyTorch中梯度的计算过程)
+- [](#)
 - [](#)
 - [参考](#参考)
 
 
-数据的加载主要包括以下几个方面：
-- 数据集的格式转换，需要支持各种类型各种格式的数据，如图片、语音、文本、表格等
-- 数据的采样和shuffle，可能面临分布式的挑战。
-- 数据增强，会产生额外的数据
-- 数据预处理，如图片事先进行黑白二值化等
-- 数据分batch
-- 数据加载到内存，并且进入锁页内存
-- 数据加载到GPU
-- 数据分发给不同的计算单元，并且不会重复，且支持分布式训练
+## 梯度的初步认识
 
-## 数据加载的设计
+我们知道，深度神经网络的训练时依赖于梯度的反向传播的，因此在深度学习框架的设计上就涉及到几个问题：
+- 梯度保存在哪里？
+- 梯度是怎样计算的？
+- 神经网络的参数是如何更新的？
+- 如何实现反向传播？
 
+神经网络的核心数据结构是Tensor，对于需要优化的Tensor，每次更新，都会有一个对应的梯度。因此最合适的方式就是将梯度保存在Tensor这个数据结构里。
 
-下面我们先看一个利用CIFAR10数据集进行模型训练的例子：
+在初始化Tensor的时候，可以指定一个参数requires_grad，代表这个Tensor是否需要计算梯度。
 
-```Python
+在涉及复杂的神经网络之前，我们先看一个非常简单的计算，这个例子来自于pytorch官方文档。
+```python
+import torch
 
-transform_train = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
-
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
-
-trainset = torchvision.datasets.CIFAR10(
-    root='./data', train=True, download=True, transform=transform_train)
-trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=128, shuffle=True, num_workers=2)
-
-# Model
-print('==> Building model..')
-net = SENet18()
-net = net.to(device)
-if device == 'cuda':
-    net = torch.nn.DataParallel(net)
-    cudnn.benchmark = True
-
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr,
-                      momentum=0.9, weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
-
-# Training
-def train(epoch):
-    print('\nEpoch: %d' % epoch)
-    net.train()
-    train_loss = 0
-    correct = 0
-    total = 0
-    for batch_idx, (inputs, targets) in enumerate(trainloader):
-        inputs, targets = inputs.to(device), targets.to(device)
-        optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(outputs, targets)
-        loss.backward()
-        optimizer.step()
-
-
-for epoch in range(start_epoch, start_epoch+200):
-    train(epoch)
-    scheduler.step()
-
-```
-在这个例子中，训练使用的是torch.utils.data.DataLoader，我们先从DataLoader入手，看看PyTorch是如何管理数据的。
-
-### 并行数据读取
-当前业界普遍使用GPU进行模型训练，GPU的吞吐率很高，很容易导致数据的加载成为瓶颈。因此PyTorch的DataLoader支持多个worker同时加载数据。相应地，DataLoader的迭代器有两类：_SingleProcessDataLoaderIter处理单个worker的情况，而_MultiProcessingDataLoaderIter处理多个worker的情况。
-
-### 支持锁页内存
-
-出于安全性的考虑，现代操作系统为每个进程提供了独立的虚拟地址空间，虚拟地址空间和物理内存的地址是通过内存映射实现的。同时操作系统也支持将内存中的数据交换到磁盘上，以提高总体可用内存的数量，这对现代操作系统中复杂多样的应用程序管理提供了很大的灵活性，但是由于磁盘的速度远低于内存，也会造成在访问被交换出去的内存数据时，会带来非常大的延时。
-
-在关键的应用场景，或者高性能计算的应用中，为了避免内存数据被交换到磁盘上，可以使用操作系统提供的能力，将数据永久保留在内存中，一般我们称这部分内存为锁页内存（pinned memory）。
-
-在深度学习模型训练过程中，因为数据集所占的内存比较多，又需要被频繁访问，因此一个比较好的加速方法就是将数据集放到锁页内存中。
-
-使用锁页内存的另一个好处是主机内存和GPU内存之间的数据传输，基于锁页内存传输数据可以避免一次临时的数据拷贝，也能带来一定的内存节省和性能提升。
-
-### 数据加载的整体设计
-
-相比算子实现来讲，数据加载可以算作是非常简单直接的实现了。如下是单进程下数据加载的运行时，_SingleProcessDataLoaderIter的处理逻辑相对清晰，主要的工作是读取数据的Fetcher和pin_memory()这两部分。
-<img src='../images/4.png'>
-
-在多进程的情况下，最耗费时间的Fetcher部分和pin_memory()部分改成了多进程，如下图：
-<img src='../images/3.png'>
-
-
-## 数据读取
-
-在torch模块中，DataSet是所有数据集的基类，其中关键的方法是__getitem__（），因为关联的DataLoader依靠这个方法来获取数据。
-
-但是Pytorch将__getitem__()的实现下放到了其他模块中，原因在于不同类型的数据集差异很大，比如图像类数据集要处理的主要是图片，可能被打包成一个文件中，也可能按照命名规范放到一个或多个目录下，其label可能是很多小文件，也可能是一个json或者xml文件，而语音识别数据集则主要处理语音文件，label一般是很多行的文本，每一行对应一个语音文件，至于机器学习的数据集，比如分类回归，其数据集文件一般是csv格式、libsvm的格式，甚至可能是数据库中的一个表。不同类型的数据集需要不同的读取方式，因此各自实现是最方便。
-
-```Python
-# torch/utils/data/dataset.py
-
-class Dataset(Generic[T_co]):
-    def __getitem__(self, index) -> T_co:
-        raise NotImplementedError
-
-    def __add__(self, other: 'Dataset[T_co]') -> 'ConcatDataset[T_co]':
-        return ConcatDataset([self, other])
-
+x = torch.ones(2, 2, requires_grad=True)
+print(x)
 ```
 
-在torchvision中，可以比较清楚的看到, CIFAR10的数据集继承了VisionDataset（VisionDataset继承了torch.utils.Dataset，并且没有实现__getitem__()），并且实现了__getitem__()方法。
+输出结果为：
 
-```Python
-# torchvision/datasets/cifar.py
-
-class CIFAR10(VisionDataset):
-
-     def __init__(
-            self,
-            root: str,
-            train: bool = True,
-            transform: Optional[Callable] = None,
-            target_transform: Optional[Callable] = None,
-            download: bool = False,
-    ) -> None:
-
-        super(CIFAR10, self).__init__(root, transform=transform,
-                                      target_transform=target_transform)
-        #...
-        self.data: Any = []
-        self.targets = []
-
-        # now load the picked numpy arrays
-        for file_name, checksum in downloaded_list:
-            file_path = os.path.join(self.root, self.base_folder, file_name)
-            with open(file_path, 'rb') as f:
-                entry = pickle.load(f, encoding='latin1')
-                self.data.append(entry['data'])
-                if 'labels' in entry:
-                    self.targets.extend(entry['labels'])
-                else:
-                    self.targets.extend(entry['fine_labels'])
-
-        self.data = np.vstack(self.data).reshape(-1, 3, 32, 32)
-        self.data = self.data.transpose((0, 2, 3, 1))  # convert to HWC
-
-        self._load_meta()
-
-    def _load_meta(self) -> None:
-        path = os.path.join(self.root, self.base_folder, self.meta['filename'])
-        if not check_integrity(path, self.meta['md5']):
-            raise RuntimeError('Dataset metadata file not found or corrupted.' +
-                               ' You can use download=True to download it')
-        with open(path, 'rb') as infile:
-            data = pickle.load(infile, encoding='latin1')
-            self.classes = data[self.meta['key']]
-        self.class_to_idx = {_class: i for i, _class in enumerate(self.classes)}
-
-    def __getitem__(self, index: int) -> Tuple[Any, Any]:
-        img, target = self.data[index], self.targets[index]
-
-        img = Image.fromarray(img)
-
-        if self.transform is not None:
-            img = self.transform(img)
-
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-
-        return img, target
+```bash
+tensor([[1., 1.],
+        [1., 1.]], requires_grad=True)
 ```
 
-从上面的实现中可以看到，CIFAR10的数据集在初始化的时候就把所有的图片都读取并做了初始的处理，考虑到某些数据集可能远远大于CIFAR10，事先加载并不是最好的选择，例如torchvision.datasets.imagenet.ImageNet数据集，继承了DatasetFolder，后者的实现中，事先只加载了meta信息，真正训练的时候才会去执行读取图片及处理的工作。
+如果对这个Tensor做一些操作：
 
-我们会有个疑问，所有的worker使用同一个Dataset吗？__getitem__()会成为瓶颈么？
+```python
+y = x + 2
+print(y)
+```
 
-## 数据采样
+输出为：
+```bash
+tensor([[3., 3.],
+        [3., 3.]], grad_fn=<AddBackward0>)
+```
+可以看到基于加法操作的Tensor y，被附加了一个grad_fn的函数。因为x是需要梯度的，而y是基于x的加法操作得到的，因此在计算梯度的时候，需要根据y的梯度（或者说与目标y值的差异）计算x的梯度，这个计算过程是由函数grad_fn完成的。
 
-我们在训练模型的时候，一般是把DataLoader当作迭代器来使用，缺省情况下DataLoader只使用一个进程来读取数据，所返回的迭代器
-称为_SingleProcessDataLoaderIter，但是当计算速度比较快，比如使用GPU或者多卡进行训练时，为了加快数据加载的速度，我们可
-以设置DataLoader使用多进程进行读取，此时DataLoader返回的迭代器称为_MultiProcessingDataLoaderIter。
+同理做更多的操作：
 
-```Python
-#Harry  torch/utils/data/dataloader.py
+```python
+z = y * y * 3
+out = z.mean()
 
-class DataLoader(Generic[T_co]):
-    dataset: Dataset[T_co]
-    batch_size: Optional[int]
-    num_workers: int
-    pin_memory: bool
-    drop_last: bool
-    timeout: float
-    sampler: Union[Sampler, Iterable]
-    pin_memory_device: str
-    prefetch_factor: int
-    _iterator : Optional['_BaseDataLoaderIter']
-    __initialized = False
+print(z, out)
+```
 
-    def _get_iterator(self) -> '_BaseDataLoaderIter':
-        if self.num_workers == 0:
-            return _SingleProcessDataLoaderIter(self)
+输出如下，可见计算梯度的函数不是固定的，不同的操作对应不同的梯度计算函数。
+
+```bash
+tensor([[27., 27.],
+        [27., 27.]], grad_fn=<MulBackward0>) 
+tensor(27., grad_fn=<MeanBackward0>)
+```
+
+现在我们再看一下梯度的计算和反向传播过程，刚才提到梯度是保存在Tensor里的，在pytorch中，可以通过Tensor.grad来访问梯度。
+
+```python
+out.backward()
+
+print(x.grad)
+```
+
+输出：
+
+```bash
+tensor([[4.5000, 4.5000],
+        [4.5000, 4.5000]])
+```
+
+## 关于梯度的基本理论
+
+### 雅克比矩阵
+### 一元Tensor的梯度计算，不需要雅克比矩阵
+
+<font size=4 color='red'>待补充</font>
+
+## PyTorch中梯度的计算过程
+
+从刚才的例子可以看到，梯度可以通过Tensor.backward()函数计算得到。那么这个函数都做了什么呢？
+
+```python
+class Tensor(torch._C._TensorBase):
+    def backward(self, gradient=None, retain_graph=None, create_graph=False, inputs=None):
+
+        if has_torch_function_unary(self):
+            return handle_torch_function(
+                Tensor.backward,
+                (self,),
+                self,
+                gradient=gradient,
+                retain_graph=retain_graph,
+                create_graph=create_graph,
+                inputs=inputs)
+        torch.autograd.backward(self, gradient, retain_graph, create_graph, inputs=inputs)   
+```
+我们<font color=red>先忽略</font>对一元情况的处理，一般来说，最终会调用autograd.backward()函数进行梯度的计算，这个函数定义在torch/autograd/__init__.py中。
+
+这个函数在计算梯度并且反向传播的时候，会把梯度保存在<font color=red>计算图的叶子节点</font>中。需要注意的是，在调用backward前，确保叶子节点的梯度是清零的。虽然PyTorch支持重复计算梯度，但是除非必要，不推荐这样做。
+
+```python
+def backward(
+    tensors: _TensorOrTensors,
+    grad_tensors: Optional[_TensorOrTensors] = None,
+    retain_graph: Optional[bool] = None,
+    create_graph: bool = False,
+    grad_variables: Optional[_TensorOrTensors] = None,
+    inputs: Optional[_TensorOrTensors] = None,
+) -> None:
+    if grad_variables is not None:
+        warnings.warn("'grad_variables' is deprecated. Use 'grad_tensors' instead.")
+        if grad_tensors is None:
+            grad_tensors = grad_variables
         else:
-            self.check_worker_number_rationality()
-            return _MultiProcessingDataLoaderIter(self)
+            raise RuntimeError("'grad_tensors' and 'grad_variables' (deprecated) "
+                               "arguments both passed to backward(). Please only "
+                               "use 'grad_tensors'.")
+    if inputs is not None and len(inputs) == 0:
+        raise RuntimeError("'inputs' argument to backward() cannot be empty.")
 
+    tensors = (tensors,) if isinstance(tensors, torch.Tensor) else tuple(tensors)
+    inputs = (inputs,) if isinstance(inputs, torch.Tensor) else \
+        tuple(inputs) if inputs is not None else tuple()
+
+    grad_tensors_ = _tensor_or_tensors_to_tuple(grad_tensors, len(tensors))
+    grad_tensors_ = _make_grads(tensors, grad_tensors_, is_grads_batched=False)
+    if retain_graph is None:
+        retain_graph = create_graph
+
+    # The reason we repeat same the comment below is that
+    # some Python versions print out the first line of a multi-line function
+    # calls in the traceback and some print out the last line
+    Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+        tensors, grad_tensors_, retain_graph, create_graph, inputs,
+        allow_unreachable=True, accumulate_grad=True)  # Calls into the C++ engine to run the backward pass
 ```
-由于要协调进程间数据的读取，_MultiProcessingDataLoaderIter的实现略微复杂一些。首先，在初始化的时候，就会通过python multiprocessing库创建多个子进程，每个子进程都在执行_worker_loop()函数。
+在经过<font color=red>一些处理</font>之后，最后调用的是Variable._execution_engine.run_backwar()函数，但事实上，Variable._execution_engine是一个C++级别的对象，初始化在torch/autograd/variable.py中。
 
-```Python
-# torch/utils/data/dataloader.py
+```python
+import torch
+from torch._six import with_metaclass
 
-class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
-    def __init__(self, loader):
-        #...
-        for i in range(self._num_workers):
-            index_queue = multiprocessing_context.Queue()  
-            index_queue.cancel_join_thread()
-            w = multiprocessing_context.Process(
-                target=_utils.worker._worker_loop,
-                args=(self._dataset_kind, self._dataset, index_queue,
-                      self._worker_result_queue, self._workers_done_event,
-                      self._auto_collation, self._collate_fn, self._drop_last,
-                      self._base_seed, self._worker_init_fn, i, self._num_workers,
-                      self._persistent_workers, self._shared_seed))
-            w.daemon = True
-            w.start()
-            self._index_queues.append(index_queue)
-            self._workers.append(w)
-        #...
-```
 
-在多进程中环境中，不能使用Python标准库中的Queue。需要使用进程安全的multiprocessing.Queue，和其他语言的多进程队列类似，multiprocessing.Queue提供可能阻塞的get方法，以及不会阻塞的get_nowait()方法。在队列为空的时候，get_nowait()方法会抛一个Empty异常。
+class VariableMeta(type):
+    def __instancecheck__(cls, other):
+        return isinstance(other, torch.Tensor)
 
-进程安全的Queue是_MultiProcessDataLoaderIter中主进程及各个worker子进程之间传递消息的通道，包括以下几种：
-- index_queue。存放数据为(send_idx, index)，由main_thread生产，worker_1～n_process消费。其中send_idx是main_thread维护的记录任务顺序和数量的计数器，每发送一个index到index_queue中，send_idx便会加一，具体用途后续解释。
-- worker_result_queue。存放数据为(send_idx, pageble tensor)，由worker_1~n_process产生，pin_memory_thread消费。
-- data_queue。存放数据为(send_idx, pinned tensor)，由- pin_memory_thread产生，main_thread消费。
+# mypy doesn't understand torch._six.with_metaclass
+class Variable(with_metaclass(VariableMeta, torch._C._LegacyVariableBase)):  # type: ignore[misc]
+    pass
 
-对应于
-```Python
-# torch/utils/data/_utils/worker.py
-
-def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
-                 auto_collation, collate_fn, drop_last, base_seed, init_fn, worker_id,
-                 num_workers, persistent_workers, shared_seed):
-
-        #...
-        global _worker_info
-        _worker_info = WorkerInfo(id=worker_id, num_workers=num_workers,
-                                  seed=seed, dataset=dataset)
-
-        #...
-        fetcher = _DatasetKind.create_fetcher(dataset_kind, dataset, auto_collation, collate_fn, drop_last)
-        #...
-
-        while watchdog.is_alive():
-            r = index_queue.get(timeout=MP_STATUS_CHECK_INTERVAL)
-            
-            if isinstance(r, _ResumeIteration):
-                #...
-                fetcher = _DatasetKind.create_fetcher(
-                    dataset_kind, dataset, auto_collation, collate_fn, drop_last)
-                continue
-            #...        
-            idx, index = r
-            data: Union[_IterableDatasetStopIteration, ExceptionWrapper]
-
-            #...        
-            data = fetcher.fetch(index)
-            data_queue.put((idx, data))
-            del data, idx, index, r  # save memory
-            #...        
-
+from torch._C import _ImperativeEngine as ImperativeEngine
+Variable._execution_engine = ImperativeEngine()
 ```
 
-这里简单介绍一下fetcher，fetcher的工作就是从Dataset中读取数据，根据Dataset的类型（Map类型或者Iterable类型），直接按下标取Dataset中的数据，或者以迭代器的方式访问Dataset中的数据，最终以单个样本数据或者批量的方式（当前没看到使用批量的方式）返回给worker.
+在对应的C++代码中，使用PyModule_AddObject注册了_ImperativeEngine这个类对象。
+torch/csrc/autograd/python_engine.cpp
 
-从上面代码可以看出worker的工作流程也比较简单，先根据Dataset类型创建相应的fetcher，然后启动循环，从index_queue中获取期望读取的index，再调用fetcher获取相应index位置的数据，之后将返回的数据写到data_queue中，这就完成了一次样本数据的读取工作。
+```C++
+PyTypeObject THPEngineType = {
+    PyVarObject_HEAD_INIT(nullptr, 0) "torch._C._EngineBase", /* tp_name */
+    sizeof(THPEngine), /* tp_basicsize */
+    0, /* tp_itemsize */
+    nullptr, /* tp_dealloc */
+    0, /* tp_vectorcall_offset */
+    nullptr, /* tp_getattr */
+    nullptr, /* tp_setattr */
+    nullptr, /* tp_reserved */
+    nullptr, /* tp_repr */
+    nullptr, /* tp_as_number */
+    nullptr, /* tp_as_sequence */
+    nullptr, /* tp_as_mapping */
+    nullptr, /* tp_hash  */
+    nullptr, /* tp_call */
+    nullptr, /* tp_str */
+    nullptr, /* tp_getattro */
+    nullptr, /* tp_setattro */
+    nullptr, /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
+    nullptr, /* tp_doc */
+    nullptr, /* tp_traverse */
+    nullptr, /* tp_clear */
+    nullptr, /* tp_richcompare */
+    0, /* tp_weaklistoffset */
+    nullptr, /* tp_iter */
+    nullptr, /* tp_iternext */
+    THPEngine_methods, /* tp_methods */
+    nullptr, /* tp_members */
+    nullptr, /* tp_getset */
+    nullptr, /* tp_base */
+    nullptr, /* tp_dict */
+    nullptr, /* tp_descr_get */
+    nullptr, /* tp_descr_set */
+    0, /* tp_dictoffset */
+    nullptr, /* tp_init */
+    nullptr, /* tp_alloc */
+    THPEngine_new /* tp_new */
+};
 
-值得注意的是，当读到末尾的时候，worker会根据drop_last参数决定是否要丢弃最后这一部分数据，同时如果设置了重新加载数据，worker会重新创建一个fetcher。
-
-
-## 数据预处理及数据增强
-在Dataset的定义中，本身是没有transform参数的，但是我们平时在使用具体的Dataset时，一般都有transform这个参数用来对读取的样本进行预处理，这个功能是在具体Dataset的实现上添加的，例如torchvision中的数据集大部分是继承自DatasetFolder，这个基类提供了transform参数和target_transform参数，前者用来对样本输入(x)进行变换，后者则是用来对样本标签进行变换。
-
-```Python
-# torchvision/datasets/folder.py
-
-class DatasetFolder(VisionDataset):
-    def __getitem__(self, index: int) -> Tuple[Any, Any]:
-        path, target = self.samples[index]
-        sample = self.loader(path)
-        if self.transform is not None:
-            sample = self.transform(sample)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-
-        return sample, target
+bool THPEngine_initModule(PyObject* module) {
+#ifndef _WIN32
+  if (pthread_atfork(nullptr, nullptr, child_atfork) != 0) {
+    throw std::runtime_error("unable to set pthread_atfork handler");
+  }
+#endif
+  if (PyType_Ready(&THPEngineType) < 0)
+    return false;
+  Py_INCREF(&THPEngineType);
+  PyModule_AddObject(module, "_ImperativeEngine", (PyObject*)&THPEngineType);
+  set_default_engine_stub(python::PythonEngine::get_python_engine);
+  return true;
+}
 ```
 
-## 锁页内存
+希望了解PyModule_AddObject细节的同学可以学习一下Cython。在这里我们只需要知道这个函数可以将C++的类型注册到Python的模块中，在Python中可以像使用原生Python类型一样初始化和调就可以了。当然这里肯定会涉及到Python和C++中类型的属性映射和方法映射等。
 
-到了这里，原始的文件中的数据已经被读取，经过变换后，放到了DataLoader的data_queue里，
+可以看到，实际注册的对象是一个PyTypeObject。PyTypeObject是Python中非常重要的一种类型，PyTypeObject就是用来描述一种类型对象的行为的结构体，比如对于一个int类型的对象和string类型的对象，两者的初始化肯定不一样，两者的打印输出方式，两者的比较运算方式肯定都不一样等等，因此对于每一种类型对象来说都要有一个PyTypeObject对象保存与这个类型相关的一些数据成员和函数指针．并且每个类型对象在初始的时候都会初始化PyTypeObject对象，类型信息就固定下来了
+参考 https://blog.csdn.net/zhangyifei216/article/details/50581787
 
-```Python
-# torch/utils/data/dataloader.py
+对象中每个字段的含义可以从注释中看出来，不过基本可以忽略，大部分都是空，最后一个字段是THPEngine_new，就是该类型对应的构造函数了。
 
-class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
-    def __init__(self, loader):
-        #...
+有一点待确认，就是PyTypeObject各个字段的定义，在不同Python版本中估计是不一样的，如何保证兼容呢？至少参考文档中的介绍和pytorch中这个类型的声明似乎不一致。
 
-       if self._pin_memory:
-            self._pin_memory_thread_done_event = threading.Event()
+对于_ImperativeEngine这个类，在C++中注册了以下几个函数，其中就包括run_backward函数，对应的C++实现是THPEngine_run_backward。
 
-            # Queue is not type-annotated
-            self._data_queue = queue.Queue()  # type: ignore[var-annotated]
-            pin_memory_thread = threading.Thread(
-                target=_utils.pin_memory._pin_memory_loop,
-                args=(self._worker_result_queue, self._data_queue,
-                      torch.cuda.current_device(),
-                      self._pin_memory_thread_done_event, self._pin_memory_device))
-            pin_memory_thread.daemon = True
-            pin_memory_thread.start()
-            # Similar to workers (see comment above), we only register
-            # pin_memory_thread once it is started.
-            self._pin_memory_thread = pin_memory_thread
-        else:
-            self._data_queue = self._worker_result_queue
+```C++
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays,cppcoreguidelines-avoid-non-const-global-variables)
+static struct PyMethodDef THPEngine_methods[] = {
+    {(char*)"run_backward",
+     castPyCFunctionWithKeywords(THPEngine_run_backward),
+     METH_VARARGS | METH_KEYWORDS,
+     nullptr},
+    {(char*)"queue_callback", THPEngine_queue_callback, METH_O, nullptr},
+    {(char*)"is_checkpoint_valid",
+     THPEngine_is_checkpoint_valid,
+     METH_NOARGS,
+     nullptr},
+    {nullptr}};
 ```
 
-可以看到，DataLoader只启动了一个pin_memory的线程，这个线程的工作相当简单，就是将_data_queue中的样本数据逐一取出，调用Tensor.pin_memory(device)方法，再放入_worker_result_queue中。当然也会偶尔遇到样本数据不是Tensor的情况，需要做一些额外的处理。
+THPEngine_run_backward函数的实现相对比较复杂，但是其中开始部分是对输入参数进行解析，在结束部分是对Tensor进行赋值，可以<font color=red>先不看</font>。
 
-TODO: Tensor的pin_memory方法以后有机会可以再看一下。
+```C++
+// Implementation of torch._C._EngineBase.run_backward
+PyObject* THPEngine_run_backward(
+    PyObject* self,
+    PyObject* args,
+    PyObject* kwargs) {
+  
+  HANDLE_TH_ERRORS
+  PyObject* tensors = nullptr;
+  PyObject* grad_tensors = nullptr;
+  unsigned char keep_graph = 0;
+  unsigned char create_graph = 0;
+  PyObject* inputs = nullptr;
+  unsigned char allow_unreachable = 0;
+  unsigned char accumulate_grad =
+      0; // Indicate whether to accumulate grad into leaf Tensors or capture
+  const char* accepted_kwargs[] = {// NOLINT
+                                   "tensors",
+                                   "grad_tensors",
+                                   "keep_graph",
+                                   "create_graph",
+                                   "inputs",
+                                   "allow_unreachable",
+                                   "accumulate_grad",
+                                   nullptr};
 
-## 数据加载到GPU
+    if (!PyArg_ParseTupleAndKeywords(
+          args,
+          kwargs,
+          "OObb|Obb",
+          (char**)accepted_kwargs,
+          &tensors,
+          &grad_tensors,
+          &keep_graph,
+          &create_graph,
+          &inputs,
+          &allow_unreachable,
+          &accumulate_grad))
+    return nullptr;
 
+  // ... check arguments
 
+  // ... init edges
 
-## 数据分发
-DistributedSampler
+  variable_list outputs;
+  {
+    pybind11::gil_scoped_release no_gil;
+    auto& engine = python::PythonEngine::get_python_engine();
+    outputs = engine.execute(
+        roots, grads, keep_graph, create_graph, accumulate_grad, output_edges);
+  }
 
-torch/utils/dataset.py
+  // ... assign gradients to Tensor
 
-## 模型训练中的数据集
+}
 
+```
 
-<img src='../images/dataloader.png'/>
+在执行run_backward()函数时，首先通过PyArg_ParseTupleAndKeywords()函数对入参进行格式解析，将Python的对象参数转换成C++下的对象，便于后续的处理。
 
+可以看到，计算梯度的核心函数是engine.execute()，PythonEngine继承自Engine，实现execute()的时候也是简单调用了Engine::execute()的实现。
 
+下面的代码来自于torch/csrc/autograd/python_engine.h 和torch/csrc/autograd/python_engine.cpp。
 
+```C++
+struct PythonEngine : public Engine {
+  static Engine& get_python_engine();
+  ~PythonEngine() override;
+  void thread_init(
+      int device,
+      const std::shared_ptr<ReadyQueue>& ready_queue,
+      bool should_increment) override;
+  void thread_on_exception(
+      std::shared_ptr<GraphTask> graph_task,
+      const std::shared_ptr<Node>& fn,
+      std::exception& e) override;
+  variable_list execute(
+      const edge_list& roots,
+      const variable_list& inputs,
+      bool keep_graph,
+      bool create_graph,
+      bool accumulate_grad,
+      const edge_list& outputs = {}) override;
 
+  c10::intrusive_ptr<at::ivalue::Future> execute_with_graph_task(
+      const std::shared_ptr<GraphTask>& graph_task,
+      std::shared_ptr<Node> graph_root,
+      InputBuffer&& input_buffer) override;
 
+  std::unique_ptr<AnomalyMetadata> make_anomaly_metadata() override;
+  std::unique_ptr<SavedVariableHooks> get_default_saved_variable_hooks()
+      override;
 
-—
+ private:
+  PythonEngine();
+};
 
-### 设计原则1. DataLoader -> Dataset
+Engine& PythonEngine::get_python_engine() {
+  static PythonEngine engine;
+  // This is "probably" thread-safe because the flag is set in a fork handler
+  // before any threads are created, and this function is only called with the
+  // GIL held. However, using fork + threads is playing with fire so this is
+  // more of a "best effort" thing. For example, if the fork occurs while the
+  // backwards threads hold a lock, we'll probably deadlock in the engine
+  // destructor.
+  if (_reinitialize_engine) {
+    engine.release_workers();
+    engine.~PythonEngine();
+    new (&engine) torch::autograd::python::PythonEngine();
+    _reinitialize_engine = false;
+  }
+  return engine;
+}
 
+variable_list PythonEngine::execute(
+    const edge_list& roots,
+    const variable_list& inputs,
+    bool keep_graph,
+    bool create_graph,
+    bool accumulate_grad,
+    const edge_list& outputs) {
+  TORCH_CHECK(
+      !PyGILState_Check(),
+      "The autograd engine was called while holding the GIL. If you are using the C++ "
+      "API, the autograd engine is an expensive operation that does not require the "
+      "GIL to be held so you should release it with 'pybind11::gil_scoped_release no_gil;'"
+      ". If you are not using the C++ API, please report a bug to the pytorch team.")
+  try {
+    return Engine::execute(
+        roots, inputs, keep_graph, create_graph, accumulate_grad, outputs);
+  } catch (python_error& e) {
+    e.restore();
+    throw;
+  }
+}
 
+```
+Engine的定义和实现分别在torch/csrc/autograd/engine.h和torch/csrc/autograd/engine.cpp中。
+
+在一个平台级的系统里，能够被命名为Engine的类型，一定是整个系统的核心，而
+Engine.execute()函数的实现肯定是这个核心对象的主要执行逻辑，在深度学习框架中，这个最主要的执行逻辑就是计算神经网络的梯度。
+
+```C++
+auto Engine::execute(
+    const edge_list& roots,
+    const variable_list& inputs,
+    bool keep_graph,
+    bool create_graph,
+    bool accumulate_grad,
+    const edge_list& outputs) -> variable_list {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+  validate_outputs(
+      roots, const_cast<variable_list&>(inputs), [](const std::string& msg) {
+        return msg;
+      });
+  if (accumulate_grad && create_graph) {
+    TORCH_WARN_ONCE(
+        "Using backward() with create_graph=True will create a reference cycle "
+        "between the parameter and its gradient which can cause a memory leak. "
+        "We recommend using autograd.grad when creating the graph to avoid this. "
+        "If you have to use this function, make sure to reset the .grad fields of "
+        "your parameters to None after use to break the cycle and avoid the leak.");
+  }
+
+  // accumulate_grad is true if and only if the frontend call was to
+  // grad(), not backward(). grad() returns the sum of the gradients
+  // w.r.t. the inputs and thus needs the inputs to be present.
+  TORCH_CHECK_VALUE(
+      accumulate_grad || !outputs.empty(), "grad requires non-empty inputs.");
+
+  // A fresh first time Engine::execute call should start on the CPU device,
+  // initialize a new thread local ready queue on CPU or reuse the existing one
+  // (if there is one allocated already, i.e. consecutive backward calls,
+  // re-entrant backward calls), then memoize the local_ready_queue in GraphTask
+  init_local_ready_queue();
+  bool not_reentrant_backward_call = worker_device == NO_DEVICE;
+
+  auto graph_task = std::make_shared<GraphTask>(
+      /* keep_graph */ keep_graph,
+      /* create_graph */ create_graph,
+      /* depth */ not_reentrant_backward_call ? 0 : total_depth + 1,
+      /* cpu_ready_queue */ local_ready_queue);
+
+  // If we receive a single root, skip creating extra root node
+  bool skip_dummy_node = roots.size() == 1;
+  auto graph_root = skip_dummy_node
+      ? roots.at(0).function
+      : std::make_shared<GraphRoot>(roots, inputs);
+
+  auto min_topo_nr = compute_min_topological_nr(outputs);
+  // Now compute the dependencies for all executable functions
+  compute_dependencies(graph_root.get(), *graph_task, min_topo_nr);
+
+  if (!outputs.empty()) {
+    graph_task->init_to_execute(
+        *graph_root, outputs, accumulate_grad, min_topo_nr);
+  }
+
+  // Queue the root
+  if (skip_dummy_node) {
+    InputBuffer input_buffer(roots.at(0).function->num_inputs());
+    auto input = inputs.at(0);
+
+    const auto input_stream = InputMetadata(input).stream();
+    const auto opt_next_stream =
+        roots.at(0).function->stream(c10::DeviceType::CUDA);
+    input_buffer.add(
+        roots.at(0).input_nr, std::move(input), input_stream, opt_next_stream);
+
+    execute_with_graph_task(graph_task, graph_root, std::move(input_buffer));
+  } else {
+    execute_with_graph_task(
+        graph_task, graph_root, InputBuffer(variable_list()));
+  }
+  // Avoid a refcount bump for the Future, since we check for refcount in
+  // DistEngine (see TORCH_INTERNAL_ASSERT(futureGrads.use_count() == 1)
+  // in dist_engine.cpp).
+  auto& fut = graph_task->future_result_;
+  fut->wait();
+  graph_task->warning_handler_.replay_warnings();
+  return fut->value().toTensorVector();
+}
+```
+
+GraphTask在执行的过程中创建出来的。
+
+明显能够看出，execute()方法中的重要步骤是execute_with_graph_task()函数。
+
+执行的时候就是对graph_task进行BFS遍历，从root开始调用各Node的operator()重载函数。
+
+```C++
+c10::intrusive_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
+    const std::shared_ptr<GraphTask>& graph_task,
+    std::shared_ptr<Node> graph_root,
+    InputBuffer&& input_buffer) {
+  initialize_device_threads_pool();
+  // Lock mutex for GraphTask.
+  std::unique_lock<std::mutex> lock(graph_task->mutex_);
+
+  auto queue = ready_queue(graph_task->cpu_ready_queue_, input_buffer.device());
+
+  // worker_device == NO_DEVICE it's a CPU thread and it's trying to drive the
+  // autograd engine with corresponding GraphTask, and its NOT a re-entrant call
+  if (worker_device == NO_DEVICE) {
+    // We set the worker_device to CPU_DEVICE only if worker_device was
+    // previously NO_DEVICE. Setting it to CPU afterwards allow us to detect
+    // whether this is a re-entrant call or not.
+    set_device(CPU_DEVICE);
+
+    // set the graph_task owner to the current device
+    graph_task->owner_ = worker_device;
+
+    // Now that all the non-thread safe fields of the graph_task have been
+    // populated, we can enqueue it.
+    queue->push(
+        NodeTask(graph_task, std::move(graph_root), std::move(input_buffer)));
+
+    // The owning thread start to drive the engine execution for any CPU task
+    // that was just pushed or will be added later from other worker threads
+    lock.unlock();
+    thread_main(graph_task);
+    TORCH_INTERNAL_ASSERT(graph_task->future_result_->completed());
+    // reset the worker_device after the completion of the graph_task, this is
+    // so that the initial state of the engine remains the same across every
+    // backward() or grad() call, we don't need to reset local_ready_queue as we
+    // could possibly reuse it for new backward calls.
+    worker_device = NO_DEVICE;
+  } else {
+    // If worker_device is any devices (i.e. CPU, CUDA): this is a re-entrant
+    //    backward call from that device.
+    graph_task->owner_ = worker_device;
+
+    // Now that all the non-thread safe fields of the graph_task have been
+    // populated, we can enqueue it.
+    queue->push(
+        NodeTask(graph_task, std::move(graph_root), std::move(input_buffer)));
+
+    if (current_depth >= max_recursion_depth_) {
+      // See Note [Reentrant backwards]
+      // If reached the max depth, switch to a different thread
+      add_thread_pool_task(graph_task);
+    } else {
+      // Total depth needs to be updated only in this codepath, since it is
+      // not used in the block above (when we call add_thread_pool_task).
+      // In the codepath above, GraphTask.reentrant_depth_ is used to
+      // bootstrap total_depth in the other thread.
+      ++total_depth;
+
+      // Get back to work while we wait for our new graph_task to
+      // complete!
+      ++current_depth;
+      lock.unlock();
+      thread_main(graph_task);
+      --current_depth;
+      --total_depth;
+
+      // The graph task should have completed and the associated future should
+      // be marked completed as well since 'thread_main' above is a call
+      // blocking an autograd engine thread.
+      TORCH_INTERNAL_ASSERT(graph_task->future_result_->completed());
+    }
+  }
+  // graph_task_exec_post_processing is done when the Future is marked as
+  // completed in mark_as_completed_and_run_post_processing.
+  return graph_task->future_result_;
+}
+```
+
+这里涉及到几个逻辑：
+- 梯度的计算一般也是矩阵计算，对算力要求比较高，在有GPU的情况下可以使用GPU计算，因此这里根据是否指定了Device分别处理。
+- 由于计算图是一个有向无环图，计算的时候有很多可以并行的节点，因此在设计上可以将任务推到队列中进行并行计算。
+
+从上面的代码可以看到，计算的核心是thread_main(graph_task)
+
+```C++
+auto Engine::thread_main(const std::shared_ptr<GraphTask>& graph_task) -> void {
+  // When graph_task is nullptr, this is a long running thread that processes
+  // tasks (ex: device threads). When graph_task is non-null (ex: reentrant
+  // backwards, user thread), this function is expected to exit once that
+  // graph_task complete.
+
+#ifdef USE_ROCM
+  // Keep track of backward pass for rocblas.
+  at::ROCmBackwardPassGuard in_backward;
+#endif
+
+  // local_ready_queue should already been initialized when we get into
+  // thread_main
+  TORCH_INTERNAL_ASSERT(local_ready_queue != nullptr);
+  while (graph_task == nullptr || !graph_task->future_result_->completed()) {
+    // local_graph_task represents the graph_task we retrieve from the queue.
+    // The outer graph_task represents the overall graph_task we need to execute
+    // for reentrant execution.
+    std::shared_ptr<GraphTask> local_graph_task;
+    {
+      // Scope this block of execution since NodeTask is not needed after this
+      // block and can be deallocated (release any references to grad tensors
+      // as part of inputs_).
+      NodeTask task = local_ready_queue->pop();
+      // This will only work if the worker is running a non backward task
+      // TODO Needs to be fixed this to work in all cases
+      if (task.isShutdownTask_) {
+        C10_LOG_API_USAGE_ONCE("torch.autograd.thread_shutdown");
+        break;
+      }
+
+      if (!(local_graph_task = task.base_.lock())) {
+        // GraphTask for function is no longer valid, skipping further
+        // execution.
+        continue;
+      }
+
+      if (task.fn_ && !local_graph_task->has_error_.load()) {
+        // Set the ThreadLocalState before calling the function.
+        // NB: The ThreadLocalStateGuard doesn't set the grad_mode because
+        // GraphTask always saves ThreadLocalState without grad_mode.
+        at::ThreadLocalStateGuard tls_guard(local_graph_task->thread_locals_);
+        c10::Warning::WarningHandlerGuard warnings_guard(
+            &local_graph_task->warning_handler_);
+
+        try {
+          // The guard sets the thread_local current_graph_task on construction
+          // and restores it on exit. The current_graph_task variable helps
+          // queue_callback() to find the target GraphTask to append final
+          // callbacks.
+          GraphTaskGuard guard(local_graph_task);
+          NodeGuard ndguard(task.fn_);
+          {
+            RECORD_FUNCTION(
+                c10::str(
+                    "autograd::engine::evaluate_function: ",
+                    task.fn_.get()->name()),
+                c10::ArrayRef<const c10::IValue>());
+            evaluate_function(
+                local_graph_task,
+                task.fn_.get(),
+                task.inputs_,
+                local_graph_task->cpu_ready_queue_);
+          }
+        } catch (std::exception& e) {
+          thread_on_exception(local_graph_task, task.fn_, e);
+        }
+      }
+    }
+
+    // Decrement the outstanding tasks.
+    --local_graph_task->outstanding_tasks_;
+
+    // Check if we've completed execution.
+    if (local_graph_task->completed()) {
+      local_graph_task->mark_as_completed_and_run_post_processing();
+
+      auto base_owner = local_graph_task->owner_;
+      // The current worker thread finish the graph_task, but the owning thread
+      // of the graph_task might be sleeping on pop() if it does not have work.
+      // So we need to send a dummy function task to the owning thread just to
+      // ensure that it's not sleeping, so that we can exit the thread_main.
+      // If it has work, it might see that graph_task->outstanding_tasks_ == 0
+      // before it gets to the task, but it's a no-op anyway.
+      //
+      // NB: This is not necessary if the current thread is the owning thread.
+      if (worker_device != base_owner) {
+        // Synchronize outstanding_tasks_ with queue mutex
+        std::atomic_thread_fence(std::memory_order_release);
+        ready_queue_by_index(local_graph_task->cpu_ready_queue_, base_owner)
+            ->push(NodeTask(local_graph_task, nullptr, InputBuffer(0)));
+      }
+    }
+  }
+}
+```
+
+thread_main()方法的最重要的步骤是调用evaluate_function().
+
+```C++
+void Engine::evaluate_function(
+    std::shared_ptr<GraphTask>& graph_task,
+    Node* func,
+    InputBuffer& inputs,
+    const std::shared_ptr<ReadyQueue>& cpu_ready_queue) {
+  // The InputBuffer::adds that supplied incoming grads took pains to
+  // ensure they're safe to consume in the context of the present
+  // func's stream (if applicable). So we guard onto that stream
+  // before working with the grads in any capacity.
+  const auto opt_parent_stream = (*func).stream(c10::DeviceType::CUDA);
+  c10::OptionalStreamGuard parent_stream_guard{opt_parent_stream};
+
+  // If exec_info_ is not empty, we have to instrument the execution
+  auto& exec_info_ = graph_task->exec_info_;
+  if (!exec_info_.empty()) {
+    auto& fn_info = exec_info_.at(func);
+    if (auto* capture_vec = fn_info.captures_.get()) {
+      // Lock mutex for writing to graph_task->captured_vars_.
+      std::lock_guard<std::mutex> lock(graph_task->mutex_);
+      for (const auto& capture : *capture_vec) {
+        auto& captured_grad = graph_task->captured_vars_[capture.output_idx_];
+        captured_grad = inputs[capture.input_idx_];
+        for (auto& hook : capture.hooks_) {
+          captured_grad = (*hook)(captured_grad);
+        }
+        if (opt_parent_stream) {
+          // No need to take graph_task->mutex_ here, we already hold it
+          graph_task->leaf_streams.emplace(*opt_parent_stream);
+        }
+      }
+    }
+    if (!fn_info.needed_) {
+      // Skip execution if we don't need to execute the function.
+      return;
+    }
+  }
+
+  auto outputs = call_function(graph_task, func, inputs);
+
+  auto& fn = *func;
+  if (!graph_task->keep_graph_) {
+    fn.release_variables();
+  }
+
+  int num_outputs = outputs.size();
+  if (num_outputs == 0) { // Note: doesn't acquire the mutex
+    // Records leaf stream (if applicable)
+    // See Note [Streaming backwards]
+    if (opt_parent_stream) {
+      std::lock_guard<std::mutex> lock(graph_task->mutex_);
+      graph_task->leaf_streams.emplace(*opt_parent_stream);
+    }
+    return;
+  }
+
+  if (AnomalyMode::is_enabled()) {
+    AutoGradMode grad_mode(false);
+    for (const auto i : c10::irange(num_outputs)) {
+      auto& output = outputs[i];
+      at::OptionalDeviceGuard guard(device_of(output));
+      if (output.defined() && isnan(output).any().item<uint8_t>()) {
+        std::stringstream ss;
+        ss << "Function '" << fn.name() << "' returned nan values in its " << i
+           << "th output.";
+        throw std::runtime_error(ss.str());
+      }
+    }
+  }
+
+  // Lock mutex for the accesses to GraphTask dependencies_, not_ready_ and
+  // cpu_ready_queue_ below
+  std::lock_guard<std::mutex> lock(graph_task->mutex_);
+  for (const auto i : c10::irange(num_outputs)) {
+    auto& output = outputs[i];
+    const auto& next = fn.next_edge(i);
+
+    if (!next.is_valid())
+      continue;
+
+    // Check if the next function is ready to be computed
+    bool is_ready = false;
+    auto& dependencies = graph_task->dependencies_;
+    auto it = dependencies.find(next.function.get());
+
+    if (it == dependencies.end()) {
+      auto name = next.function->name();
+      throw std::runtime_error(std::string("dependency not found for ") + name);
+    } else if (--it->second == 0) {
+      dependencies.erase(it);
+      is_ready = true;
+    }
+
+    auto& not_ready = graph_task->not_ready_;
+    auto not_ready_it = not_ready.find(next.function.get());
+    if (not_ready_it == not_ready.end()) {
+      // Skip functions that aren't supposed to be executed
+      if (!exec_info_.empty()) {
+        auto it = exec_info_.find(next.function.get());
+        if (it == exec_info_.end() || !it->second.should_execute()) {
+          continue;
+        }
+      }
+      // No buffers have been allocated for the function
+      InputBuffer input_buffer(next.function->num_inputs());
+
+      // Accumulates into buffer
+      const auto opt_next_stream = next.function->stream(c10::DeviceType::CUDA);
+      input_buffer.add(
+          next.input_nr, std::move(output), opt_parent_stream, opt_next_stream);
+
+      if (is_ready) {
+        auto queue = ready_queue(cpu_ready_queue, input_buffer.device());
+        queue->push(
+            NodeTask(graph_task, next.function, std::move(input_buffer)));
+      } else {
+        not_ready.emplace(next.function.get(), std::move(input_buffer));
+      }
+    } else {
+      // The function already has a buffer
+      auto& input_buffer = not_ready_it->second;
+
+      // Accumulates into buffer
+      const auto opt_next_stream = next.function->stream(c10::DeviceType::CUDA);
+      input_buffer.add(
+          next.input_nr, std::move(output), opt_parent_stream, opt_next_stream);
+      if (is_ready) {
+        auto queue = ready_queue(cpu_ready_queue, input_buffer.device());
+        queue->push(
+            NodeTask(graph_task, next.function, std::move(input_buffer)));
+        not_ready.erase(not_ready_it);
+      }
+    }
+  }
+}
+```
+
+其核心操作是这一个调用：
+
+```C++
+auto outputs = call_function(graph_task, func, inputs);
+```
+
+call_function的实现也在engine.cpp中。
+
+```C++
+static variable_list call_function(
+    std::shared_ptr<GraphTask>& graph_task,
+    Node* func,
+    InputBuffer& inputBuffer) {
+  CheckpointValidGuard cpvguard(graph_task);
+  auto& fn = *func;
+  auto inputs =
+      call_pre_hooks(fn, InputBuffer::variables(std::move(inputBuffer)));
+
+  if (!graph_task->keep_graph_) {
+    fn.will_release_variables();
+  }
+
+  const auto has_post_hooks = !fn.post_hooks().empty();
+  variable_list outputs;
+
+  if (has_post_hooks) {
+    // In functions/accumulate_grad.cpp, there is some logic to check the
+    // conditions under which the incoming gradient can be stolen directly
+    // (which elides a deep copy) instead of cloned. One of these conditions
+    // is that the incoming gradient's refcount must be 1 (nothing else is
+    // referencing the same data).  Stashing inputs_copy here bumps the
+    // refcount, so if post hooks are employed, it's actually still ok for
+    // accumulate_grad.cpp to steal the gradient if the refcount is 2.
+    //
+    // "new_grad.use_count() <= 1 + !post_hooks().empty()" in
+    // accumulate_grad.cpp accounts for this, but also creates a silent
+    // dependency between engine.cpp (ie, this particular engine
+    // implementation) and accumulate_grad.cpp.
+    //
+    // If you change the logic here, make sure it's compatible with
+    // accumulate_grad.cpp.
+    auto inputs_copy = inputs;
+    outputs = fn(std::move(inputs_copy));
+  } else {
+    outputs = fn(std::move(inputs));
+  }
+
+  validate_outputs(fn.next_edges(), outputs, [&](const std::string& msg) {
+    std::ostringstream ss;
+    ss << "Function " << fn.name() << " returned an " << msg;
+    return ss.str();
+  });
+
+  if (has_post_hooks) {
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    return call_post_hooks(fn, std::move(outputs), inputs);
+  }
+  return outputs;
+}
+```
+可以看到，call_function()的核心逻辑就是执行fn()函数，这个fn函数指针是NodeTask的成员。而这个NodeTask是之前执行Engine::execute_with_graph_task()方法的时候创建并放到队列里的。
+
+```C++
+    queue->push(
+        NodeTask(graph_task, std::move(graph_root), std::move(input_buffer)));
+```
+
+```C++
+struct NodeTask {
+  std::weak_ptr<GraphTask> base_;
+  std::shared_ptr<Node> fn_;
+  // This buffer serves as an implicit "addition" node for all of the
+  // gradients flowing here.  Once all the dependencies are finished, we
+  // use the contents of this buffer to run the function.
+  InputBuffer inputs_;
+  // When worker receives a task with isShutdownTask = true, it will immediately
+  // exit. The engine sends a shutdown task to every queue upon its destruction.
+  bool isShutdownTask_;
+
+  int getReentrantDepth() const;
+
+  NodeTask(
+      // NOLINTNEXTLINE(modernize-pass-by-value)
+      std::weak_ptr<GraphTask> base,
+      std::shared_ptr<Node> fn,
+      InputBuffer inputs,
+      bool isShutdownTask = false)
+      : base_(base),
+        fn_(std::move(fn)),
+        inputs_(std::move(inputs)),
+        isShutdownTask_(isShutdownTask) {}
+};
+```
+
+这样就知道所谓的NodeTask的成员fn_其实就是graph_root，而graph_root又是edge_list的第一项
+```C++
+  auto graph_root = skip_dummy_node
+      ? roots.at(0).function
+      : std::make_shared<GraphRoot>(roots, inputs);
+```
+
+roots是一开始从Python调用C++函数的时候生成的，也就是在函数THPEngine_run_backward的实现里，相关的代码如下：
+
+```C++
+PyObject* THPEngine_run_backward(
+    PyObject* self,
+    PyObject* args,
+    PyObject* kwargs) {
+//...
+
+  edge_list roots;
+  roots.reserve(num_tensors);
+  variable_list grads;
+  grads.reserve(num_tensors);
+  for (const auto i : c10::irange(num_tensors)) {
+    PyObject* _tensor = PyTuple_GET_ITEM(tensors, i);
+    THPUtils_assert(
+        THPVariable_Check(_tensor),
+        "element %d of tensors "
+        "tuple is not a Tensor",
+        i);
+    const auto& variable = THPVariable_Unpack(_tensor);
+    TORCH_CHECK(
+        !isBatchedTensor(variable),
+        "torch.autograd.grad(outputs, inputs, grad_outputs) called inside ",
+        "torch.vmap. We do not support the case where any outputs are ",
+        "vmapped tensors (output ",
+        i,
+        " is being vmapped over). Please "
+        "call autograd.grad() outside torch.vmap or file a bug report "
+        "with your use case.")
+    auto gradient_edge = torch::autograd::impl::gradient_edge(variable);
+    THPUtils_assert(
+        gradient_edge.function,
+        "element %d of tensors does not require grad and does not have a grad_fn",
+        i);
+    roots.push_back(std::move(gradient_edge));
+
+    //...
+  }
+
+//...
+    }
+```
+
+gradient_edge的定义在torch/csrc/autograd/variable.cpp中：
+
+```C++
+Edge gradient_edge(const Variable& self) {
+  // If grad_fn is null (as is the case for a leaf node), we instead
+  // interpret the gradient function to be a gradient accumulator, which will
+  // accumulate its inputs into the grad property of the variable. These
+  // nodes get suppressed in some situations, see "suppress gradient
+  // accumulation" below. Note that only variables which have `requires_grad =
+  // True` can have gradient accumulators.
+  if (const auto& gradient = self.grad_fn()) {
+    return Edge(gradient, self.output_nr());
+  } else {
+    return Edge(grad_accumulator(self), 0);
+  }
+}
+```
+
+Edge的定义在torch/csrc/autograd/edge.h中，可以看出，Edge中的函数其实就是Variable中的grad_fn，而Variable是从前边的_tensor通过THPVariable_Unpack处理得到的。
+
+```C++
+/// Represents a particular input of a function.
+struct Edge {
+  Edge() noexcept : function(nullptr), input_nr(0) {}
+
+  Edge(std::shared_ptr<Node> function_, uint32_t input_nr_) noexcept
+      : function(std::move(function_)), input_nr(input_nr_) {}
+
+  /// Convenience method to test if an edge is valid.
+  bool is_valid() const noexcept {
+    return function != nullptr;
+  }
+
+  // Required for use in associative containers.
+  bool operator==(const Edge& other) const noexcept {
+    return this->function == other.function && this->input_nr == other.input_nr;
+  }
+
+  bool operator!=(const Edge& other) const noexcept {
+    return !(*this == other);
+  }
+
+  /// The function this `Edge` points to.
+  std::shared_ptr<Node> function;
+
+  /// The identifier of a particular input to the function.
+  uint32_t input_nr;
+};
+```
 
 
 ## 参考
-
-- 万字综述，核心开发者全面解读PyTorch内部机制 https://zhuanlan.zhihu.com/p/67834038
-- https://blog.csdn.net/u013608424/article/details/123782284
+- PYTORCH 自动微分（二）https://zhuanlan.zhihu.com/p/111874952
+- https://zhuanlan.zhihu.com/p/69294347
+- https://pytorch.org/blog/how-computational-graphs-are-executed-in-pytorch/
+- https://www.cnblogs.com/rossiXYZ/p/15481235.html
