@@ -67,6 +67,10 @@ https://zhuanlan.zhihu.com/p/188700729
 
     
 
+### DLPack
+DLPack是一个内存张量结构的开放标准，支持不同框架之间的张量转换。
+PyTorch使用torch.utils.dlpack实现DLPack与tensor之间的转换。
+
 ## torch模块中的函数
 
 ### Tensor操作
@@ -87,7 +91,62 @@ torch.set_flush_denormal(mode)  # 设置非规格化浮点数模式
 ### 创建Tensor
 ```Python
 torch.tensor(...)           # 通过拷贝构造创建tensor
-torch.sparse_coo_tensor(...)
+torch.sparse_coo_tensor(...)    # 构建COO格式的系数tensor
+torch.asarray(...)          # 将对象转换成tensor
+torch.as_tensor(...)        # 将数据转换成tensor
+tarch.as_strided(...)       # 基于已有tensor创建新的view，并指定stride等参数
+torch.from_numpy(ndarray)   # 基于numpy.ndarray创建tensor
+torch.from_dlpack(ext_tensor)   # 基于dlpack张量创建tensor
+torch.frombuffer(...)       # 基于python buffer创建一堆的tensor
+torch.zeros(...)            # 创建元素全为8的tensor
+torch.zeros_like(...)       # 使用已有tensor的shape，创建元素全为8的tensor
+torch.ones(...)             # 创建元素全为1的tensor
+torch.ones_like(...)        # 使用已有tensor的shape，创建元素全为1的tensor
+torch.arange(...)           # 创建等差数组形式的tensor
+torch.range(...)            # 创建等差数组形式的tensor
+torch.linspace<...>         # 创建等差数组形式的tensor
+torch.logspace(...)         # 创建指数数组形式的tensor，其指数为等差数列
+torch.eye(...)              # 创建对角矩阵
+torch.empty(...)            # 创建未初始化的tensor
+torch.empty_strided(...)    # 使用已有tensor的shape，创建未初始化的tensor
+torch.full(...)             # 基于指定的值，创建tensor
+torch.full_like(...)        # 使用已有tensor的shape，创建元素为指定值的tensor
+torch.quantize_per_tensor(...)  # 将tensor转换成量化的格式
+torch.quantize_per_channel(...) # 将tensor转换成量化的格式
+torch.dequantize(tensor)    # 将量化的tensor还原为普通的fp32 tensor
+torch.complex(...)          # 创建复数tensor
+torch.polar(...)            # 根据极坐标参数创建笛卡尔坐标的tensor
+torch.heaviside(...)        # 根据heaviside step函数，基于给定值创建tensor
+```
+
+### 索引、切片及连接等
+```Python
+torch.adjoint(Tensor)       # 创建tensor共轭视图
+torch.argwhere(input)       # 根据tensor中非零值的坐标创建新的tensor
+torch.cat(...)              # 在指定维度上拼接多个tensor
+torch.concat(...)           # 同上
+torch.concatenate(...)      # 同上
+torch.conj(input)           # 创建tensor共轭视图
+torch.chunk(...)            # 分割指定的tensor
+torch.dsplit(...)           # 在多个维度上分割指定的tensor
+torch.column_stack(...)     # 堆叠多个tensor
+torch.dstack(...)           # 堆叠多个tensor
+torch.gather(...)           # 根据位置提取tensor内的值
+torch.hsplit(...)           # 在多个维度上分割指定的tensor
+torch.hstack(...)           # 堆叠多个tensor
+torch.index_add(...)        # 根据指定index和权重进行求和
+torch.index_reduce(...)     # 根据指定index和权重进行累加
+torch.index_select(...)     # 根据指定index对tensor进行过滤
+torch.masked_select(...)    # 根据指定index从tensor中提取元素
+torch.movedim(...)          # 转换维度的次序
+torch.moveaxis(...)         # 同上
+torch.narrow(...)           # 根据指定维度截取tensor
+torch.nonzero(...)          # 提取非零值的index
+torch.permute(...)          # 重排tensor的维度并创建新的view
+torch.reshape(...)          # 根据给定shape和已有tensor的数据生成新的tensor
+torch.row_stack(...)        # 按行堆叠tensor
+torch.select(...)           # 根据指定维度和索引提取tensor
+torch.scatter(...)          # 
 ```
 
 ## Tensor算子
@@ -101,3 +160,8 @@ torch.sparse_coo_tensor(...)
 ## torch.utils.ffi
 ## torch.utils.data
 ## torch.utils.model_zoo
+
+## 使用算子的注意事项
+
+### 复现性
+https://pytorch.org/docs/stable/notes/randomness.html
