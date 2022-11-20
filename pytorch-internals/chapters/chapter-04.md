@@ -300,13 +300,36 @@ torch.is_warn_always_enabled()  # 判断是否设置了一些内部警告只出�
 torch._assert(condition, message)   # 断言语句
 ```
 
+## torch.nn的算子
+
+### 容器类（Container）算子
+```Python
+Module/Sequential/ModuleList/ModuleDict/ParameterList/ParameterDict
+```
+
+### 模块的全局钩子
+```Python
+torch.nn.modules.module.register_module_forward_pre_hook(hook)
+torch.nn.modules.module.register_module_forward_hook(hook)
+torch.nn.modules.module.register_module_backward_hook(hook)
+torch.nn.modules.module.register_module_full_backward_hook(hook)
+```
+
+### 卷积（Convolution）算子
+```Python
+Conv1d/Conv2d/Conv3d/ConvTranspose1d/ConvTranspose2d/ConvTranspose3d
+LazyConv1d/LazyConv2d/LazyConv3d/LazyConvTranpose1d/LazyConvTranspose2d
+LazyConvTranspose3d/Unfold/Fold
+```
+
+### Pooling Layers
+```Python
+```
 
 ## Tensor算子
 ```Python
 ```
-## torch.nn的算子
-```Python
-```
+
 ## torch.nn.functional
 ```Python
 ```
