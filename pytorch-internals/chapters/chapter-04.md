@@ -88,6 +88,7 @@ torch.numel(input)          # 返回input tensor中元素个数
 torch.set_printoptions(...) # 设置打印格式
 torch.set_flush_denormal(mode)  # 设置非规格化浮点数模式
 ```
+
 ### 创建Tensor
 ```Python
 torch.tensor(...)           # 通过拷贝构造创建tensor
@@ -146,8 +147,66 @@ torch.permute(...)          # 重排tensor的维度并创建新的view
 torch.reshape(...)          # 根据给定shape和已有tensor的数据生成新的tensor
 torch.row_stack(...)        # 按行堆叠tensor
 torch.select(...)           # 根据指定维度和索引提取tensor
-torch.scatter(...)          # 
+torch.scatter(...)          # 将指定的值嵌入到tensor中
+torch.diagonal_scatter(...) # 将指定的值嵌入到tensor对角元素中
+torch.select_scatter(...)   # 将指定的值嵌入到tensor指定位置
+torch.slice_scatter(...)    # 将指定的值嵌入到tensor指定维度
+torch.scatter_add(...)      # 按指定维度和位置相加
+torch.scatter_reduce(...)   # 使用指定规约方法进行计算
+torch.split(...)            # 按指定维度分割tensor
+torch.squeeze(...)          # 去除大小为1的维度
+torch.stack(...)            # 堆叠同样大小的tensor并形成新的维度
+torch.swapaxes(...)         # 同numpy swapaxes, 同transpose
+torch.swapdims(...)         # 同上
+torch.t(input)              # 2维转置
+torch.take(...)             # 从头tensor中提取元素
+torch.take_along_dim(...)   # 从tensor中提取元素值
+torch.tensor_split(...)     # 对tensor进行分割
+torch.tile(...)             # 反复堆叠同一个tensor形成新的tensor
+torch.transpose(...)        # 在指定维度上做转置
+torch.unbind(...)           # 删除指定的维度
+torch.unsqueeze(...)        # 在指定位置增加维度
+torch.vsplit(...)           # 分割tensor
+torch.vstack(...)           # 按行堆叠多个tensor
+torch.where(...)            # 根据条件从tensor中筛选元素
 ```
+
+### 随机数相关算子
+```Python
+torch.Generator(...)        # 创建随机数发生器
+torch.seed()                # 生成随机数种子
+torch.manual_seed(seed)     # 设置随机数种子
+torch.initial_seed(...)     # 获取初始随机数种子
+torch.get_rng_state(...)    # 获取随机数发生器状态
+torch.set_rng_state(...)    # 设置随机数发生器状态
+torch.bernoulli(...)        # 根据指定概率生成伯努利分布
+torch.multinomial(...)      # 根据指定权重多次多项式分布取样
+torch.normal(...)           # 根据指定均值方差生成正态分布
+torch.poisson(...)          # 生成泊松分布
+torch.rand(...)             # 生成[0,1)区间的均匀分布
+torch.rand_like(...)        # 生成[0,1)区间的均匀分布
+torch.randint(...)          # 生成指定区间内均匀分布的整数序列
+torch.randint_like(...)     # 生成指定区间内均匀分布的整数序列
+torch.randn(...)            # 生成均值为0方差为1的正态分布
+torch.randn_like(...)       # 生成均值为0方差为1的正态分布
+torch.randperm(...)         # 生成0到n-1的随机排列
+torch.quasirandom.SobolEngine(...) # 创建低差异分布Sobol序列的发生器
+```
+
+### 序列号
+```Python
+torch.save(...)             # 将对象序列化为一个文件
+torch.load(...)             # 从文件反序列化为一个对象
+```
+### 并行操作
+```Python
+torch.get_num_threads()     # 获取并行CPU操作的线程数
+torch.set_num_threads(int)  # 设置并行CPU操作的线程数
+torch.get_num_interop_threads() # 获取CPU上算子间并行的线程数
+torch.set_num_interop_threads(int)  # 设置CPU上算子间并行的线程数
+```
+
+### 
 
 ## Tensor算子
 ## torch.nn的算子
