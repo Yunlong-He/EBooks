@@ -206,13 +206,116 @@ torch.get_num_interop_threads() # 获取CPU上算子间并行的线程数
 torch.set_num_interop_threads(int)  # 设置CPU上算子间并行的线程数
 ```
 
-### 
+### 梯度开关
+```Python
+torch.no_grad               # 关闭梯度计算的上下文类
+torch.enable_grad           # 打开梯度计算的上下文类
+torch.set_grad_enabled(mode)    # 设置梯度计算开或者关
+torch.is_grad_enabled()     # 判断梯度计算是否打开
+torch.inference_mode(mode)  # 打开或关闭推理模式的上下文类
+torch.is_inference_mode_enabled()   # 判断是否打开了推理模式
+```
+
+### 数学算子
+数学类的算子是最多的，为了节省篇幅和体力，这里就只列举算子名称了。
+#### 单点算子（Pointwise）
+```Python
+abs/absolute/acos/arccos/acosh/arccosh/add/addcdiv/addcmul
+angle/asin/arcsin/asinh/arcsinh/atan/arctan/atanh/arctanh
+atan2/arctan2/bitwise_not/bitwise_and/bitwise_and/bitwise_or
+bitwise_xor/bitwise_left_shift/bitwise_right_shift/ceil
+clamp/clip/conj_physical/copysign/cos/cosh/deg2rad/div
+divide/digamma/erf/erfc/erfinv/exp/exp2/expm1/float_power
+fake_quantize_per_channel_affine/fix/floor/floor_devide
+fake_quantize_per_tensor_affine/fmod/frac/frexp/gradient
+imag/ldexp/lerp/lgamma/log/log10/log1p/log2/logaddexp
+logaddexp2/logical_and/logical_not/logical_or/logical_xor
+logit/hypot/i0/igamma/igammac/mul/multiply/mvlgamma/neg
+nan_to_num/negative/nextafter/polygamma/positive/pow
+quantized_batch_norm/quantized_max_pool1d/rad2deg/real
+quantized_max_pool2d/reciprocal/remainder/round/rsqrt
+sigmoid/sign/sgn/signbit/sin/sinc/sinh/sqrt/square/sub
+subtract/tan/tanh/true_divide/trunc/xlogy
+```
+#### 规约算子
+```Python
+argmax/argmin/amax/amin/aminmax/all/any/max/min/dist
+logsumexp/mean/nanmean/median/nanmedian/mode/norm/nansum
+prod/quantile/nanquantile/std/std_mean/sum/unique
+unique_consecutive/var/var_mean/count_nonzero
+```
+
+#### 比较算子
+```Python
+allclose/argsort/eq/equal/ge/greater_equal/gt/greater
+isclose/isfinite/isin/isinf/isposinf/isneginf/isnan/isreal
+kthvalue/le/less_equal/lt/less/maximum/minimum/fmax/fmin
+ne/not_equal/sort/topk/msort
+```
+
+#### 谱算子
+
+```Python
+stft/istft/bartlett_window/blackman_window/hamming_window
+hann_window/kaiser_window/
+```
+#### 其他算子
+```Python
+atleast_1d/atleast_2d/atleast_3d/bincount/block_diag
+broadcast_tensors/broadcast_to/broadcast_shapes/bucketsize
+cartesian_prod/cdist/clone/combination/corrcoef/cov/cross
+cumax/cummin/cmprod/cumsum/diag/diag_embed/diagflat/diff
+diagonal/einsum/flatten/flip/fliplr/flipud/kron/rot90/gcd
+histc/histogram/histogramdd/meshgrid/lcm/logcumsumexp
+ravel/renorm/repeat_interleave/roll/searchsorted/tensordot
+trace/tril/tril_indices/triu/triu_indices/unflatten/vander
+view_as_real/view_as_complex/resolve_conj/resolve_neg
+```
+
+#### BLAS/LAPACK 算子
+```Python
+addbmm/addmm/addmv/addr/baddbmm/bmm/chain_matmul/cholesky
+cholesky_inverse/cholesky_solve/dot/geqrf/ger/inner
+inverse/det/logdet/slogdet/lu/lu_solve/lu_unpack/matmul
+matrix_power/matrix_exp/mm/mv/orgqr/ormqr/outer/pinverse
+qr/svd/svd_lowrank/pca_lowrank/symeig/lobpcg/trapz
+trapezoid/cumulative_trapezoid/triangular_solve/vdot
+```
+
+### 工具算子（Utilities）
+```Python
+torch.compiled_with_cxx11_abi() # 判断编译PyTorch时是否_GLIBCXX_USE_CXX11_ABI=1
+torch.result_type(...)  # 判断两个tensor做数学计算时结果的类型
+torch.can_cast(...)     # 判断是否可以进行类型转换
+torch.promote_types(...)    # 返回不低于两个类型的最低要求的类型
+torch.use_deterministic_algorithms(...) # 设置PyTorch是否必须使用可复现的算法
+torch.are_deterministic_algorithms_enabled() # 判断PyTorch是否使用可复现的算法
+torch.is_deterministic_algorithms_warn_only_enabled()   # 判断该开关是否设置为只是警告
+torch.set_deterministic_debug_mode(debug_mode)  # 设置该开关
+torch.get_deterministic_debug_mode()    # 获取该开关
+torch.set_float32_matmul_precision(precision)   # 设置内部计算float32矩阵乘法的精度
+torch.get_float32_matmul_precision()    # 获取内部计算float32矩阵乘法的精度
+torch.set_warn_always(b)    # 设置一些内部警告只出现一次
+torch.is_warn_always_enabled()  # 判断是否设置了一些内部警告只出现一次
+torch._assert(condition, message)   # 断言语句
+```
+
 
 ## Tensor算子
+```Python
+```
 ## torch.nn的算子
+```Python
+```
 ## torch.nn.functional
+```Python
+```
 ## torch.optim
+```Python
+```
 ## torch.autograd
+```Python
+```
 ## torch.multiprocessing
 ## torch.cuda
 ## torch.legacy

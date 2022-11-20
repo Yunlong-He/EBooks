@@ -1,14 +1,17 @@
 
-# 第三章 AB测试
+# RTA
 
-## AB测试的基本方法
+## 场景介绍
 
+RTA是Realtime API的简称
 
-## 多臂老虎机
+<img src="../images/rta.webp"/>
+
+## RTA 架构
 
 - 
 
 
-## AB测试中面临的常见问题
+## 参考
 
-- 我们做的是人群模型，多个模型
+- https://zhuanlan.zhihu.com/p/125464058?from_voters_page=true
