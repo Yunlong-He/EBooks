@@ -348,11 +348,94 @@ SiLU/Mish/Softplus/Softshrink/Softsign/Tanh/Tanhshrink/Threshold/GLU
 ```Python
 Softmin/Softmax/Softmax2d/LogSoftmax/AdaptiveLogSoftmaxWithLoss
 ```
+### 规范化层（Normalizatio Layers）
+```Python
+BatchNorm1d/BatchNorm2d/BatchNorm3d/LazyBatchNorm1d/LazyBatchNorm2d
+LazyBatchNorm3d/GroupNorm/SyncBatchNorm/InstanceNorm1d/InstanceNorm2d
+InstanceNorm3d/LazyInstanceNorm1d/LazyInstanceNorm2d/LazyInstanceNorm3d
+LayerNorm/LocalResponseNorm
+```
 
+### 循环网络层（Recurrent Layers）
+```Python
+RNNBase/RNN/LSTM/GRU/RNNCell/LSTMCell/GRUCell
+```
 
+### Transformer层
+```Python
+Transformer/TransformerEncoder/TransformerDecoder
+TransformerEncoderLayer/TransformerDecoderLayer
+```
+
+### 线性层
+```Python
+Identity/Linear/Bilinear/LazyLinear
+```
+
+### Dropout层
+```Python
+Dropout/Dropout1d/Dropout2d/Dropout3d/AlphaDropout/FeatureAlphaDropout
+```
+
+### 稀疏层（Sparse）
+```Python
+Embedding/EmbeddingBag
+```
+
+### 距离函数
+```Python
+CosineSimilarity/PairwiseDistance
+```
+
+### 损失函数
+```Python
+L1Loss/MSELoss/CrossEntropyLoss/CTCLoss/NLLoss/PoissonNLLLoss/GaussianNLLLoss
+KLDivLoss/BCELoss/BCEWithLogitsLoss/MarginRankingLoss/HingeEmbeddingLoss
+MultiLabelMarginLoss/HuberLoss/SmoothL1Loss/SoftMarginLoss/MultiLabelSoftMarginLoss
+CosineEmbeddingLoss/MultiMarginLoss/TripletMarginLoss/TripletMarginWithDistanceLoss
+```
+
+### 视觉层(Vision)
+```Python
+PixelShuffle/PixelUnshuffle/Upsample/UpsamplingNearest2d/UpsamplingBilinear2d
+```
+
+### Shuffle层
+```Python
+ChannelShuffle
+```
+
+### 分布式（DataParallel）
+```Python
+DataParallel/DistributedDataParallel
+```
+
+### 工具函数（Utilities)
+```Python
+clip_grad_norm_/clip_grad_value_/parameters_to_vector/vector_to_parameters
+prune.BasePruningMethod/prune.PruningContainer/prune.Identity
+prune.RandomUnstructured/prune.L1Unstructured/prune.RandomStructured
+prune.LnStructured/prune.CustomFromMask/prune.identiy/prune.random_unstructured
+prune.l1_unstructured/prune.random_structured/prune.ln_structured
+prune.global_unstructured/prune.custom_from_mask/prune.remove/prune.is_pruned
+weight_norm/remove_weight_norm/spectral_norm/remove_spectral_norm/skip_init
+parametrizations.orthogonal/parametrizations.spectral_norm
+parametrize.register_parametrization/parametrize.remove_parametrizations
+parametrize.cached/parametrize.is_parametrized/parametrize.ParametrizationList
+stateless.functional_call/utils.rnn.PackedSequence/utils.rnn.pack_padded_sequence
+utils.rnn.pad_packed_sequence/utils.rnn.pad_sequence/utils.runn.pack_sequence
+Flatten/Unflatten
+```
+
+### 量化函数
+### 模块初始化
+```Python
+modules.lazy.LazyModuleMixin
+```
 
 ## Tensor算子
 ```Python
+
 ```
 
 ## torch.nn.functional
