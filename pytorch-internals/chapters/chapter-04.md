@@ -324,7 +324,32 @@ LazyConvTranspose3d/Unfold/Fold
 
 ### Pooling Layers
 ```Python
+MaxPool1d/MaxPool2d/MaxPool3d/MaxUnpool1d/MaxUnpool2d/MaxUnpool3d
+AvgPool1d/AvgPool2d/AvgPool3d/FractionalMaxPool2d/FractionalMaxPool3d
+LPPool1d/LPPool2d/AdaptiveMaxPool1d/AdaptiveMaxPool2d/AdaptiveMaxPool3d
+AdaptiveAvgPool1d/AdaptiveAvgPool2d/AdaptiveAvgPool3d
 ```
+
+### Padding Layers
+```Python
+ReflectionPad1d/ReflectionPad2d/ReflectionPad3d/ReplicationPad1d
+ReplicationPad2d/ReplicationPad3d/ZeroPad2d/ConstantPad1d/ConstantPad2d
+ConstantPad3d/
+```
+
+### 非线性激活函数（weighted sum, nonlinearity）
+```Python
+ELU/Hadshrink/Hardsigmoid/Hardtanh/Hardswish/LeakyReLU/LogSigmoid
+MultiheadAttension/PReLU/ReLU/ReLU6/RReLU/SELU/CELU/GELU/Sigmoid
+SiLU/Mish/Softplus/Softshrink/Softsign/Tanh/Tanhshrink/Threshold/GLU
+```
+
+### 非线性激活函数（其他）
+```Python
+Softmin/Softmax/Softmax2d/LogSoftmax/AdaptiveLogSoftmaxWithLoss
+```
+
+
 
 ## Tensor算子
 ```Python
