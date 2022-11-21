@@ -17,7 +17,32 @@
 
 ## Tensor
 
-### Tensor的数据
+torch.Tensor被定义为一个多维矩阵，这个矩阵中的每一个元素有单一的数据类型。
+
+### Tensor的数据类型
+PyTorch定义了10种类型.
+
+|Data type|dtype|CPU tensor | GPU tensor|
+|----|----|-----|----|
+|32-bit floating point|torch.float32 or torch.float|torch.FloatTensor|torch.cuda.FloatTensor|
+|64-bit floating point|torch.float64 or torch.double|torch.DoubleTensor|torch.cuda.DoubleTensor|
+|16-bit floating point |torch.float16 or torch.half|torch.HalfTensor|torch.cuda.HalfTensor|
+|16-bit floating point|torch.bfloat16|torch.BFloat16Tensor|torch.cuda.BFloat16Tensor|
+|32-bit complex|torch.complex32 or torch.chalf|||
+|64-bit complex|torch.complex64 or torch.cfloat|||
+|128-bit complex|torch.complex128 or torch.cdouble|||
+|8-bit integer (unsigned)|torch.uint8|torch.ByteTensor|torch.cuda.ByteTensor|
+|8-bit integer (signed)|torch.int8|torch.CharTensor|torch.cuda.CharTensor|
+|16-bit integer (signed)|torch.int16 or torch.short|torch.ShortTensor|torch.cuda.ShortTensor|
+|32-bit integer (signed)|torch.int32 or torch.int|torch.IntTensor|torch.cuda.IntTensor|
+|64-bit integer (signed)|torch.int64 or torch.long|torch.LongTensor|torch.cuda.LongTensor|
+|Boolean|torch.bool|torch.BoolTensor|torch.cuda.BoolTensor|
+|quantized 8-bit integer (unsigned)|torch.quint8 |torch.ByteTensor||
+|quantized 8-bit integer (signed)|torch.qint8|torch.CharTensor||
+|quantized 32-bit integer (signed)|torch.qint32|torch.IntTensor|
+|quantized 4-bit integer (unsigned)|torch.quint4x2|torch.ByteTensor|
+	
+torch.Tensor是torch.FloatTensor的别名，也就是说，缺失情况下创建的tensor都是FloatTensor。
 
 ### Tensor storage
 
@@ -433,14 +458,74 @@ Flatten/Unflatten
 modules.lazy.LazyModuleMixin
 ```
 
-## Tensor算子
-```Python
-
-```
 
 ## torch.nn.functional
+
+### 卷积函数(Convolution)
 ```Python
+conv1d/conv2d/conv3d/conv_transpose1d/conv_transpose2d/conv_transpose3d/unfold/fold
 ```
+
+### 池化函数(Pooling)
+```Python
+avg_pool1d/avg_pool2d/avg_pool3d/max_pool1d/max_pool2d/max_pool3d/max_unpool1d
+max_unpool2d/max_unpool3d/lp_pool1d/lp_pool2d/adaptive_max_pool1d/adaptive_max_pool2d
+adaptive_max_pool3d/adaptive_avg_pool1d/adaptive_avg_pool2d/adaptive_avg_pool3d
+fractional_max_pool2d/fractional_max_pool3d
+```
+
+### 非线性激活函数(Non-Linear activate)
+```Python
+threshold/threshold_/relu/relu_/hardtanh/hardtanh_/hardwish/relu6/elu/elu_/selu
+celu/leaky_relu/prelu/rrelu/rrelu_/glu/gelu/logsigmoid/hardshrink/tanhshrink/softsign
+softplus/softmin/softmax/softshrink/gumbel_softmax/log_softmax/tanh/sigmoid
+hardsigmoid/silu/mish/batch_norm/group_norm/instance_norm/layer_norm
+local_response_norm/normalize
+```
+
+### 线性函数(Linear)
+```Python
+linear/bilinear
+```
+### Dropout函数
+```Python
+dropout/alpha_dropout/feature_alpha_dropout/dropout1d/dropout2d/dropout3d
+```
+### 稀疏函数（Sparse）
+```Python
+embedding/embedding_bag/one_hot
+```
+### 距离函数
+```Python
+pairwise_distance/cosine_similarity/pdist
+```
+### 损失函数（Loss）
+```Python
+binary_cross_entropy/binary_cross_entropy_with_logits/poisson_nll_loss
+cosine_embedding_loss/cross_entropy/ctc_loss/gaussian_nll_loss
+hinge_embedding_loss/kl_div/l1_loss/mse_loss/margin_ranking_loss
+multilabel_margin_loss/multilabel_soft_margin_loss/multi_margin_loss
+nll_loss/huber_loss/smooth_l1_loss/soft_margin_loss/triplet_margin_loss
+triplet_margin_with_distance_loss
+```
+### 视觉函数（Vision）
+```Python
+pixel_shuffle/pixel_unshuffle/pad/interpolate/upsample/upsample_nearest
+upsample_bilinear/grid_sample/affine_grid
+```
+### 数据并行函数（多GPU，分布式）
+```Python
+torch.nn.parallel.data_parallel
+```
+
+
+
+## Tensor算子
+
+```Python
+
+```
+
 ## torch.optim
 ```Python
 ```
