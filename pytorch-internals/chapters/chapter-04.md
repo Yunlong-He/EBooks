@@ -19,7 +19,9 @@
 
 torch.Tensor被定义为一个多维矩阵，这个矩阵中的每一个元素有单一的数据类型。
 
-### Tensor的数据类型
+### Tensor Attributes
+每个tensor都有dtype、device和layout三种属性。
+
 PyTorch定义了10种类型.
 
 |Data type|dtype|CPU tensor | GPU tensor|
@@ -44,7 +46,26 @@ PyTorch定义了10种类型.
 	
 torch.Tensor是torch.FloatTensor的别名，也就是说，缺失情况下创建的tensor都是FloatTensor。
 
-### Tensor storage
+### torch.device
+torch.device属性代表数据分配所在的设备。 最常用的设备是'cpu'和’cuda'，有时候会加上设备号来指明具体是哪个cpu核或gpu卡。
+
+### torch.layout
+torch.layout代表tensor的内存布局，当前PyTorch支持torch.strided(Dense Tensors)以及torch.sparse_coo（sparse COO Tensors）。
+
+### torch.memory_format
+torch.memory_format代表分配tensor的内存格式。
+当前PyTorch支持：
+- torch.contiguous_format。Tensor分配在没有交叠的内存空间，并且stride呈降序排列。
+- torch.channels_last: Tensor分配在没有交叠的内存空间，以NHWC格式排列，. Strides represented by values in strides[0] > strides[2] > strides[3] > strides[1] == 1 aka NHWC order.
+- torch.channels_last_3d: Tensor分配在没有交叠的内存空间，以NDHWC格式排列.
+- torch.preserve_format: Used in functions like clone to preserve the memory format of the input tensor. If input tensor is allocated in dense non-overlapping memory, the output tensor strides will be copied from the input. Otherwise output strides will follow torch.contiguous_format
+
+### Tensor View
+PyTorch支持在已有tensor上创建新的view tensor，view tensor使用已有的数据，避免了数据的拷贝，从而支持快速高效的操作如reshaping, slicing及逐元素的操作。
+
+### Tensor Storage
+每个tensor内部都有一个torch.Storage对象，其中存储了真正的数据，Tensor类实际上提供了基于torch.Storage的多维视图，并且定义了一系列基于该数据的数值操作。
+
 
 ### Sparse Tensor
 PyTorch对于稀疏存储格式的支持,目前主要支持COO和CSR格式。

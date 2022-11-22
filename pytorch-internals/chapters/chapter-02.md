@@ -9,6 +9,44 @@
 
 ## PyTorch的设计原则
 
+为了让开发者能够充分利用硬件的计算能力，同时保持很好的开发效率，PyTorch提供了功能丰富但设计优雅的Python API，并且将繁重的工作交由C++实现。C++部分是以Python扩展的形式工作的。
+
+PyTorch的算子实现在ATen库中。
+
+为了实现自动微分，在ATen之上，PyTorch增加了AutoGrad框架。
+
+### C++扩展
+在Python API层，PyTorch早期有Variable和Tensor两种类型，在v0.4.0之后，合并成了现在的Tensor类。
+
+Python层的Tensor对象，到了C++层面用THPVariable来表示，实际C++层面使用时会先转换成C++的Tensor类型。
+THP的含义： TH来自一<font color=red>T</font>orc<font color=red>H</font>，P指的是<font color=red>P</font>ython。
+
+### numpy
+考虑到numpy的广泛使用，PyTorch支持Tensor与numpy的互相转换。
+
+### 零拷贝（zero-copy）
+
+在机器学习和深度学习的场景中，tensor代表数据、权重、以及计算结果等，因此经常会出现带有大量数据的tensor。PyTorch中存在大量的tensor创建、计算、转换等场景，如果每一次都重新拷贝一份数据，会带来巨大的内存浪费和性能损失。，因此PyTorch支持零拷贝技术以减少不必要的消耗。如：
+```Python
+>>> np_array
+   array([[1., 1.],
+      [1., 1.]])
+>>> torch_array = torch.from_numpy(np_array)
+>>> torch_array.add_(1.0)
+>>> np_array
+   array([[2., 2.],
+      [2., 2.]])
+```
+上面这种tensor和numpy array共用数据的操作，我们称为in-place操作，但有时候in-place操作和普通拷贝数据的操作（standard操作）的界限并不是很清楚，需要仔细甄别。
+
+另外需要说明的是，tensor中的数据由Storage对象进行管理，这样就把tensor的元信息与其真正的数据存储解耦了。
+
+### JIT
+PyTorch是基于动态图范式的，开发者可以像写普通程序一样，在网络的执行中加上各种条件分支语句，这样做带来的好处是容易理解，方便调试，但是同时也会有效率的影响，尤其是模型训练好之后用于推理，此时模型基本不需要调试，分支条件基本也固定了，这时候效率反而是需要优先考虑的因素了。另外虽然开发的时候使用Python会提高开发效率，但推理的时候需要支持其他的语言及环境，此时需要把模型与原来的Python代码解耦。
+
+对此，PyTorch在v1.0的版本中引入了torch.jit，支持将PyTorch模型转为可序列化及可优化的格式。作为Python静态类型的子集，TorchScrip也被引入到PyTorch中。
+
+
 ## PyTorch的整体架构
 
 ## PyTorch的源代码结构
