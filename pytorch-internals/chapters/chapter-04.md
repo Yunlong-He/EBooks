@@ -54,11 +54,66 @@ torch.layout代表tensor的内存布局，当前PyTorch支持torch.strided(Dense
 
 ### torch.memory_format
 torch.memory_format代表分配tensor的内存格式。
-当前PyTorch支持：
-- torch.contiguous_format。Tensor分配在没有交叠的内存空间，并且stride呈降序排列。
-- torch.channels_last: Tensor分配在没有交叠的内存空间，以NHWC格式排列，. Strides represented by values in strides[0] > strides[2] > strides[3] > strides[1] == 1 aka NHWC order.
-- torch.channels_last_3d: Tensor分配在没有交叠的内存空间，以NDHWC格式排列.
-- torch.preserve_format: Used in functions like clone to preserve the memory format of the input tensor. If input tensor is allocated in dense non-overlapping memory, the output tensor strides will be copied from the input. Otherwise output strides will follow torch.contiguous_format
+
+由于算子操纵的是tensor的数据，因此数据的存储方式非常重要，这里介绍存储方式中的几个关键点：
+
+
+#### Contiguous
+
+由于数据存在内存里，可以通过连续内存地址的形式访问，Tensor里保存了多维矩阵的形状，在访问时通过索引转化成1维数组的下标，即可访问到对应的数据。某些Tensor操作，比如transpose、permute、narrow、expand等，执行后得到的Tensor与原来的Tensor共享内存中的数据，不会改变数据，但从tensor的角度看，原来在语义上相邻、内存里也相邻的元素，在执行操作后，即使语义上相邻，但内存已经不相邻了.
+
+PyTorch提供了is_contiguous方法，其直观的解释是Tensor底层一维数组元素的存储顺序与Tensor按行优先一维展开的元素顺序是否一致。
+
+行优先”是多维数组以一维展开的一种方式，“列优先”也是多维数组以一维展开的另一种方式，使用哪种方式与语言实现有关。C/C++中使用的是行优先方式（row major），Matlab、Fortran使用的是列优先方式（column major），PyTorch中Tensor底层实现是C++，也是使用行优先顺序。下面这个例子中的tensor的逻辑布局如图：
+
+```Bash
+>>> t = torch.arange(12).reshape(3,4)
+>>> t
+tensor([[ 0,  1,  2,  3],
+        [ 4,  5,  6,  7],
+        [ 8,  9, 10, 11]])
+```
+
+<img src="../images/tensor_memory_layout_1.png"/>
+
+通过flatten()方法我们可以tensor的一维展开形式，这和C++中内存中的布局也是一样的。这时我们说这个tensor是”C contiguous“的，因为在内存布局中每行内的数据是连续的，并且相邻行的内存地址也是相邻的。
+```Bash
+>>> t.flatten()
+tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11])
+```
+<img src="../images/tensor_memory_layout_2.png"/>
+
+
+如果对上面的tensor做转置操作，得到新逻辑布局：
+<img src="../images/tensor_memory_layout_3.png"/>
+此时如果内存布局不变，就打破了原来的”C contiguous“,因为其行内数据"0、4、8"在内存中是不连续的。但是我们会发现满足了”Fortran contiguous“，相邻的列的数据，在内存中也是相邻的。
+
+为什么要考虑行连续或者列连续呢？因为这对性能优化非常关键，绝大多数情况下，计算有”局域化“的特点，相邻的数据在接下来的访问概率会很高，如果内存也连续，就会避免换页，从而保持比较高的性能。
+
+因此，对于”C contiguous“的内存布局来说，按行计算在性能上会比按列计算的性能要高，例如：
+```Python
+np.sum(arr, axis=1) # sum the rows
+np.sum(arr, axis=0) # sum the columns
+```
+类似，对于”Fortran contiguous“的内存布局来说，按列计算在性能上会比按行计算的性能要高。
+
+#### reshape
+
+直接对转置后的tensor进行flatten会报错，这是因为在转置时，只是创建了新的stride和shape，而根据这个stride及shape时没办法对原始的内存数据做遍历输出的。
+此时我们可以调用contiguous方法来重新生成一份连续的内存数据：
+```Python
+>>>t3 = t2.contiguous()
+>>>t3
+tensor([[ 0,  4,  8],
+        [ 1,  5,  9],
+        [ 2,  6, 10],
+        [ 3,  7, 11]])
+>>>t3.data_ptr() == t2.data_ptr() # 底层数据不是同一个一维数组
+False
+```
+PyTorch在v0.4以后的版本里提供了方法reshape()来直接实现内存的复制及重新布局，此时新的tensor的内存布局如下：
+<img src="../images/tensor_memory_layout_4.png"/>
+
 
 ### Tensor View
 PyTorch支持在已有tensor上创建新的view tensor，view tensor使用已有的数据，避免了数据的拷贝，从而支持快速高效的操作如reshaping, slicing及逐元素的操作。
@@ -544,7 +599,75 @@ torch.nn.parallel.data_parallel
 ## Tensor算子
 
 ```Python
-
+new_tensor/new_full/new_empty/new_ones/new_zeros
+is_cuda/is_quantized/is_meta/device/grad/ndim/real/imag
+abs/absolute/absolute_/acos/acos_/arccos/arccos_/add/add_
+addbmm/addbmm_/addcdiv/addcdiv_/addcmul/addcmul_/addmm/addmm_
+sspaddmm/addmv/addmv_/addr/adr_/adjoint/allclose/amax/amin
+aminmax/angle/apply_/argmax/argmin/argsort/argwhere/asin/asin_
+arcsin/arcsin_/as_strided/atan/atan_/arctan_/atan2/atan2_
+arctan2/arctan2_/all/any/backward
+baddbmm/baddbmm_/bernoulli/bernoulli_/bfloat16/bincount/bitwise_not
+bitwise_not_/bitwise_and/bitwise_and_/bitwise_or/bitwise_or_
+bitwise_xor/bitwise_xor_/bitwise_left_shift/bitwise_left_shift_
+bitwise_right_shift/bitwise_right_shift_/bmm/bool/byte/broadcast_to
+cauchy_/ceil/ceil_/char/cholesky/cholesky_inverse/cholesky_solve
+chunk/clamp/clamp_/clip/clip_/clone/contiguous/copy_/conj
+conj_physical/conj_physical_/resolve_conj/resolve_neg/copysign
+copysign_/cos/cosh/cosh_/corrcoef/count_nonzero/cov/acosh/acosh_
+arccosh/arccosh_/cpu/cross/cuda/logcumsumexp/cummax/cummin/cumprod
+cumprod_/cumsum/cumsum_/chalf/cfloat/cdouble/data_ptr/deg2rad
+dequantize/det/dense_dim/detach/detach_/diag/diag_embed/diagflat
+diagonal/diagonal_scatter/fill_diagonal_/fmax/fmin/diff/digamma
+digamma_/dim/dist/div/div_/divide/divide_/dot/double/dsplit
+element_size/eq/eq_/equal/erf/erf_/erfc/erfc_/erfinv/erfinv_
+exp/exp_/expm1/expm1_/expand/expand_as/exponential_/fix/fix_
+fill_/flatten/flip/fliplr/flipud/float/float_power/float_power_
+floor/floor_/floor_divide/fmod/fmod_/frac/frac_/frexp/gather/gcd
+gcd_/ge/ge_/greater_equal/greater_equal_/geometric_/geqrf/ger
+get_device/gt/gt_/greater/greater_/half/hardshrink/heaviside
+histc/histogram/hsplit/hypot/pypot_/i0/i0_/igamma/igamma_
+igammac/igammac_/index_add_/index_add/index_copy_/index_copy
+index_fill_/index_fill/index_put_/index_put/index_reduce_
+index_reduce/index_select/indices/inner/int/int_repr/inverse
+isclose/isfinite/isinf/isposinf/isneginf/isnan/is_contiguous
+is_complex/is_conj/is_floating_point/is_inference/is_leaf
+is_pinned/is_set_to/is_shared/is_signed/is_sparse/istft/isreal
+item/kthvalue/lcm/lcm_/ldexp/ldexp_/le/le_/less_euqal/less_equal_
+lexp/lexp_/lgamma/lgamma_/log/log_/logdet/log10/log10_/log1p
+log1p_/log2/log2_/log_normal/logaddexp/logaddexp2/logsumexp
+logical_an/logical_and_/logical_not/logical_not_/logical_or
+logical_or_/logical_xor/logical_xor_/logit/logit_/long/lt/lt_
+less/less_/lu/lu_solve/as_subclass/map_/masked_scatter
+masked_scatter_/masked_fill_/masked_fill/masked_select/matmul/
+matrix_power/matrix_exp/max/maximum/mean/nanmean/median/nanmedian
+min/minmium/mm/smm/mode/movedim/moveaxis/msort/mul/mul_/multiply
+multiply_/multinomial/mv/mvlgamma/mvlgamma_/nansum/narrow
+narrow_copy/ndimesion/nan_to_num/nan_to_num_/ne/ne_/not_equal
+not_equal_/neg/neg_/negative/negative_/nelement/nextafter
+nextafter_/nonzero/norm/normal_/numel/numpy/orgqr/ormqr/outer
+permute/pin_memory/pinverse/polygamma/polygamma_/positive/pow
+pow_/prod/put_/qr/qscheme/quantile/nanquantile/q_scale/q_zero_point
+q_per_channel_scales/q_per_channel_zero_points/q_per_channel_axis
+rad2deg/random_/ravel/reciprocal/reciprocal_/record_stream
+register_hook/remainder/remainder_/renorm/renorm_/repeat
+repeat_interleave/requires_grad/requires_grad_/reshape/reshape_as
+resize_/resize_as_/retain_grad/retains_grad/roll/rot90/round
+round_/rsqrt/rsqrt_/scatter/scatter_/scatter_add_/scatter_add
+scatter_reduce_/scatter_reduce/select/select_scatter/set_
+share_memory_/short/sigmoid/sigmoid_/sign/sign_/signbit/sgn/sgn_
+sin/sin_/sinc/sinc_/sinh/sinh_/asinh/asinh_/arcsinh/arcsinh_/size
+slogdet/slice_scatter/sort/split/sparse_mask/sparse_dim/sqrt
+sqrt_/square/square_/squeeze/squeeze_/std/stft/storage/storage_offset
+storage_type/stride/sub/sub_/subtract/subtract_/sum/sum_to_size
+svd/swapaxes/swapdims/symeig/t/t_/tensor_split/tile/to/to_mkldnn
+take_take_along_dim/tan/tan_/tanh/tanh_/atanh/atanh_/arctanh
+arctanh_/tolist/topk/to_dense/to_sparse/to_sparse_csr/to_sparse_csc
+to_sparse_bsr/to_sparse_bsc/trace/transpose/transpose_
+triangular_solve/tril/tril_/triu/triu_/true_divide/true_divide_
+trunc/trunc_/type/type_as/unbin/unflatten/unfold/uniform_/unique
+unique_consecutive/unsqueeze/unsqueeze_/values/var/vdot/view/
+view_as/vsplit/where/xlogy/xlogy_/zero_
 ```
 
 ## torch.optim
@@ -564,3 +687,7 @@ torch.nn.parallel.data_parallel
 
 ### 复现性
 https://pytorch.org/docs/stable/notes/randomness.html
+
+
+## 参考
+- https://stackoverflow.com/questions/26998223/what-is-the-difference-between-contiguous-and-non-contiguous-arrays/26999092#26999092
