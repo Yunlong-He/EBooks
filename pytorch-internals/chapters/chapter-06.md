@@ -10,6 +10,7 @@
 
 
 ## 为什么需要代码生成
+
 依照Pytorch podcast上的说法，使用代码生成方式的好处有：
 - 更好的语法表示，主要是指native_functions.yaml，JIT schema，derivatives.yaml这几个文件。实现算子时，除了算子本身的实现代码外，需要添加的内容很少并且很直观。
 - 更好的错误信息。如果使用C++模板，哪里出错确实很难控制，而且错误信息怎么写也是个问题。
@@ -22,6 +23,7 @@
 
 当然，不管是代码生成还是用模板，最终目标还是为了减少整体的代码量，以及隐藏算子开发的细节，使开发者能够将精力放到算子本身的实现逻辑上。
 
+
 ### 代码生成的主要目标
 
 对于每一个算子，为了算子能够可用，除了算子本身的实现逻辑外，我们还需要实现下面这些功能：
@@ -31,6 +33,10 @@
 - 将算子注册到dispatcher
 - 支持JIT
 - 其他杂七杂八的功能
+
+### PyTorch的Dispatcher机制
+
+<img src='../images/dispatcher_register_kernel.png'/>
 
 ## 依赖代码生成的文件
 
@@ -62,28 +68,12 @@
 ```
 后面我们会对其中关键的文件及生成过程进行介绍。
 
-## 算子的声明
-
-代码生成的核心是算子的声明，PyTorch中所有的算子都定义在native_functions.yaml中，以算子torch.add(a, b, out=c)为例，其声明如下：
-```yaml
-- func: add.out(Tensor self, Tensor other, *, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
-  device_check: NoCheck   # TensorIterator
-  structured: True
-  structured_inherits: TensorIteratorBase
-  dispatch:
-    CPU, CUDA: add_out
-    SparseCPU: add_out_sparse_cpu
-    SparseCUDA: add_out_sparse_cuda
-    SparseCsrCPU: add_out_sparse_csr_cpu
-    SparseCsrCUDA: add_out_sparse_csr_cuda
-    MkldnnCPU: mkldnn_add_out
-```
-
 
 ## ATen代码生成
 
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
 
+### 工具代码
 这部分生成的工具位于torchgen下
 ```Bash
 ├── api
@@ -188,6 +178,7 @@ ATen的native函数是PyTorch目前主推的operator机制，作为对比，老�
 - source-path: 缺省为aten/src/ATen，代表ATen源代码的路径
 - install_dir: 缺省为build/aten/src/ATen，代表输出的路径
 
+### 生成的文件
 最终生成的文件如下：
 ```Bash
 
@@ -212,7 +203,42 @@ aten_interned_strings.h  ATenOpList.cpp  TensorBody.h  TensorMethods.cpp
 
 ```
 
+### 生成代码与自定义代码的关系
 <img src="../images/torchgen.png"/>
+
+#### 自定义实现
+##### 算子声明
+
+代码生成的核心是算子的声明，PyTorch中所有的算子都定义在native_functions.yaml中，以算子torch.add(a, b, out=c)为例，其声明如下：
+```yaml
+- func: add.out(Tensor self, Tensor other, *, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
+  device_check: NoCheck   # TensorIterator
+  structured: True
+  structured_inherits: TensorIteratorBase
+  dispatch:
+    CPU, CUDA: add_out
+    SparseCPU: add_out_sparse_cpu
+    SparseCUDA: add_out_sparse_cuda
+    SparseCsrCPU: add_out_sparse_csr_cpu
+    SparseCsrCUDA: add_out_sparse_csr_cuda
+    MkldnnCPU: mkldnn_add_out
+```
+
+从之前的算子体系我们就可以看出，在PyTorch中有非常多的非常相似的算子，这些算子之间的差异包括：
+- 功能完全相同，只是名称不同，例如arctanh和atanh
+- 功能完全相同，名称也相同，但参数有一点不同，其中一个算子是直接返回Tensor，另一个算子是在参数列表中指定输出的Tensor（参数名称是out)
+- 功能相同，名称和参数也相同，但
+
+##### 算子实现
+
+ATen算子的核心代码也是在aten/src/ATen下，
+
+
+#### 生成代码
+##### C++ API
+##### Python API
+##### 基于device的dispatcher注册
+##### 基于算子名称的dispatcher注册
 
 在core/ATenOpList.cpp中，生成了所有op的OperatorName列表。
 ```C++
@@ -421,9 +447,7 @@ return wrapper_Scalar_add_Scalar(self, other, alpha);
 #     of these respective files for more information
 ```
 
-## 算子注册代码生成
-
-
+### 相关代码
 代码生成相关的工具在tools目录下：
 ```Bash
 ├── autograd
