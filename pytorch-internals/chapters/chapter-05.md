@@ -1880,64 +1880,14 @@ y = x + 2
 PyMethodDef variable_methods[] = {
   // These magic methods are all implemented on python object to wrap NotImplementedError
   {"__add__", castPyCFunctionWithKeywords(TypeError_to_NotImplemented_<THPVariable_add>), METH_VARARGS | METH_KEYWORDS, NULL},
+  {"add", castPyCFunctionWithKeywords(THPVariable_add), METH_VARARGS | METH_KEYWORDS, NULL},
   ...
+
 }
 ```
-由此可知，Python层面的加法调用，会调用到torch::autograd::THPVariable_add()函数。
-
-在调用上，依次进行如下的调用：
-- torch::autograd::THPVariable_add()函数，位于torch/csrc/autograd/generated/python_variable_methods.cpp
-- at::(anonymous namespace)::wrapper_add_Tensor()函数，位于build/aten/src/ATen/RegisterCPU.cpp
-- at::native::structured_ufunc_add_CPU::structured_ufunc_add_CPU函数，位于build/aten/src/ATen/ops/add_native.h
-- at::native::(anonymous namespace)::add_kernel()函数，位于build/aten/src/ATen/UfuncCPUKernel_add.cpp
-
+由此可知，Python层面的加法调用，会调用到torch::autograd::THPVariable_add()函数。这个函数也是由生成器生成的。
 
 ```C++
-// torch/csrc/autograd/generated/python_variable_methods.cpp
-// 在这个例子中，调用时参数self_和args均不为空，但kwargs = 0x0
-static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwargs);
-
-    // torch/csrc/utils/python_arg_parser.h
-    inline PythonArgs PythonArgParser::parse(PyObject* self, PyObject* args, PyObject* kwargs, ParsedArgs<N>& dst);
-        
-        // torch/csrc/utils/python_arg_parser.cpp
-        PythonArgs PythonArgParser::raw_parse(PyObject* self, PyObject* args, PyObject* kwargs, PyObject* parsed_args[]);
-        bool FunctionSignature::parse(PyObject* self, PyObject* args, PyObject* kwargs, PyObject* dst[], bool raise_exception);
-
-    // torch/include/ATen/core/TensorBody.h   --- generated from aten/src/ATen/templates/TensorBody.h
-    inline at::Tensor & Tensor::add(const at::Tensor & other, const at::Scalar & alpha) const;
-
-        // build/aten/src/ATen/Operators_2.cpp
-        at::Tensor & add_Tensor::call(at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
-
-            // aten/src/ATen/core/dispatch/Dispatcher.cpp
-            OperatorHandle Dispatcher::findSchemaOrThrow(const char* name, const char* overload_name);
-                c10::optional<OperatorHandle> Dispatcher::findSchema(const OperatorName& overload_name);
-                c10::optional<OperatorHandle> Dispatcher::findOp(const OperatorName& overload_name);
-
-            // aten/src/ATen/core/dispatch/Dispatcher.cpp
-            Return TypedOperatorHandle::call(Args... args) const;
-
-                // aten/src/ATen/core/dispatch/Dispatcher.cpp
-                Return Dispatcher::call(const TypedOperatorHandle<Return(Args...)>& op, Args... args) const;
-
-                    // aten/src/ATen/core/dispatch/DispatchKeyExtractor.h
-                    DispatchKeySet DispatchKeyExtractor::getDispatchKeySetUnboxed(const Args&... args) const;
-
-                    // aten/src/ATen/core/boxing/KernelFunction.h
-                    Return call(const OperatorHandle& opHandle, DispatchKeySet dispatchKeySet, Args... args) const;
-
-
-
-    // torch/csrc/autograd/utils/wrap_outputs.h
-    // 这个函数对返回值进行封装，用于Python层面的使用（待探究）
-    PyObject* wrap(PyTypeObject *type, std::tuple<Ts...> values);
-
-```
-
-在进入C++层面的第一步，是进行调用参数的解码。因为在Python层面和在C++层面类的体系是不一样的，Python语言中的Tensor类型，在C++层面统一当做PyObject来处理，因此在C++层面需要将PyObject类型的参数再还原成C++层面的Tensor等类型。另外Python语言中函数的参数是一个字典，传参时候的顺序可能有变化，这也需要在C++层面进行识别处理。
-PyTorch为此定义了PythonArgParser类，在函数被调用的入口处进行参数解析：
-``` C++
 // torch/csrc/autograd/generated/python_variable_methods.cpp
 static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwargs)
 {
@@ -1978,47 +1928,182 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
 }
 ```
 
+可以看到，在这个函数里，原有的PyObject类型的原始Python类型被转化成Tensor类型，但是其参数可能是Tensor，也可能是普通的数，这两种情况都是Python API所支持的。而参数的不同可能会对应不同的实现，因此PyTorch会根据参数的不同分别处理。但是最后都是调用"self.add()"方法，也就是下面的实现。
+
+注意：这个文件是生成器基于“./torchgen/packaged/ATen/templates/TensorBody.h”生成的，在原有代码基础上加了算子的方法。
+
+```C++
+// build/aten/src/ATen/core/TensorBody.h
+
+// aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+inline at::Tensor Tensor::add(const at::Tensor & other, const at::Scalar & alpha) const {
+    return at::_ops::add_Tensor::call(const_cast<Tensor&>(*this), other, alpha);
+}
+```
+
+"at::_ops::add_Tensor::call"也是生成器生成的，其实现逻辑是根据方法名称及参数类型，组装成函数调用的schea，在dispatcher中查询schema对应的算子，并进行调用。
+```C++
+// build/aten/src/ATen/Operators_2.cpp
+
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add_Tensor, name, "aten::add")
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add_Tensor, overload_name, "Tensor")
+STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add_Tensor, schema_str, "add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor")
+
+// aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+static C10_NOINLINE c10::TypedOperatorHandle<add_Tensor::schema> create_add_Tensor_typed_handle() {
+  return c10::Dispatcher::singleton()
+      .findSchemaOrThrow(add_Tensor::name, add_Tensor::overload_name)
+      .typed<add_Tensor::schema>();
+}
+
+// aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+at::Tensor add_Tensor::call(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+    
+    static auto op = create_add_Tensor_typed_handle();
+    return op.call(self, other, alpha);
+}
+
+// aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+at::Tensor add_Tensor::redispatch(c10::DispatchKeySet dispatchKeySet, const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+    
+    static auto op = create_add_Tensor_typed_handle();
+    return op.redispatch(dispatchKeySet, self, other, alpha);
+}
+```
+
+其实，单纯这样顺序看下去，我们是很难知道dispatcher分发到哪里去的，但是如果对相应算子的schema比较熟悉，可以知道生成器已经帮我们注册了相应的实现：
+
+```C++
+// ./build/aten/src/ATen/RegisterCPU.cpp
+
+struct structured_ufunc_add_CPU_functional final : public at::native::structured_ufunc_add_CPU {
+  // ...
+}
+
+at::Tensor wrapper_add_Tensor(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+structured_ufunc_add_CPU_functional op;
+op.meta(self, other, alpha);
+op.impl(self, other, alpha, *op.outputs_[0]);
+return std::move(op.outputs_[0]).take();
+}
+
+TORCH_LIBRARY_IMPL(aten, CPU, m) {
+
+  m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
+  // ...
+}
+```
+
+当我们看到meta()方法和impl()这两个方法的时候，就可以知道add方法是structured kernel，其中meta()方法用于检查
+
+```C++
+// ./build/aten/src/ATen/UfuncCPU_add.cpp
+
+namespace meta {
+struct TORCH_API structured_add_Tensor : public TensorIteratorBase {
+    void meta(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha);
+};
+}
+
+namespace native {
+struct TORCH_API structured_ufunc_add_CPU : public at::meta::structured_add_Tensor {
+void impl(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, const at::Tensor & out);
+};
+
+using add_fn = void(*)(TensorIteratorBase&, const at::Scalar &);
+DECLARE_DISPATCH(add_fn, add_stub);
+DEFINE_DISPATCH(add_stub);
+
+TORCH_IMPL_FUNC(ufunc_add_CPU)(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, const at::Tensor & out) {
+  add_stub(device_type(), *this, alpha);
+}
+}}
+```
+
+这里我们顺便解释一下这里涉及的注册机制，DEFINE_DISPATCH只是声明了一个名为add_stub的struct ，而DECLARE_DISPATCH真实的构造了一个新的继承于DispatchStub的add_stub结构，从名字上大概能够看出，这是一个桩函数，真正调用时会根据device_type转到不同的实现上。
+```C++
+//torch/include/ATen/native/DispatchStub.h
+
+#define DECLARE_DISPATCH(fn, name) \
+struct name : DispatchStub<fn, name> { \
+name() = default; \
+name(const name&) = delete; \
+name& operator=(const name&) = delete; \
+}; \
+extern TORCH_API struct name name
+#define DEFINE_DISPATCH(name) struct name name
+#define REGISTER_ARCH_DISPATCH(name, arch, fn) \
+template <> name::FnPtr TORCH_API DispatchStub<name::FnPtr, struct name>::arch = fn;
+```
+
+那随之而来的一个问题就是，不同的实现怎么找到的呢？上边的代码里有一个宏是REGISTER_ARCH_DISPATCH，这个宏就是用来将不同的kernel实现注册到这个add_stub结构中的。
+
+
+```C++
+// Build/aten/src/ATen/UfuncCPUKernel_add.cpp
+
+void add_kernel(TensorIteratorBase& iter, const at::Scalar & alpha) {
+at::ScalarType st = iter.common_dtype();
+RECORD_KERNEL_FUNCTION_DTYPE("add_stub", st);
+switch (st) {
+AT_PRIVATE_CASE_TYPE("add_stub", at::ScalarType::Bool, bool,
+[&]() {
+auto _s_alpha = alpha.to<scalar_t>();
+cpu_kernel(iter,
+[=](scalar_t self, scalar_t other) { return ufunc::add(self, other, _s_alpha); }
+);
+})
+}}
+
+using add_fn = void(*)(TensorIteratorBase&, const at::Scalar &);
+DECLARE_DISPATCH(add_fn, add_stub);
+REGISTER_DISPATCH(add_stub, &add_kernel);
+```
+
+最后，调用的是实际的加法实现了，这个是需要开发者自己实现的。
+```C++
+// aten/src/ATen/native/ufunc/add.h
+
+namespace at {
+namespace native {
+namespace ufunc {
+
+template <typename T>
+C10_HOST_DEVICE C10_ALWAYS_INLINE T add(T self, T other, T alpha) __ubsan_ignore_undefined__ {
+  return self + alpha * other;
+}
+
+#if !defined(__CUDACC__) && !defined(__HIPCC__)
+using vec::Vectorized;
+template <typename T>
+C10_ALWAYS_INLINE Vectorized<T> add(Vectorized<T> self, Vectorized<T> other, Vectorized<T> alpha) __ubsan_ignore_undefined__ {
+  return vec::fmadd(other, alpha, self);
+}
+#endif
+
+}}}  // namespace at::native::ufunc
+
+```
+
+但是，并不是所有的算子都是这样的调用路径的。
+
+
+在调用上，依次进行如下的调用：
+- torch::autograd::THPVariable_add()函数，位于torch/csrc/autograd/generated/python_variable_methods.cpp
+- at::(anonymous namespace)::wrapper_add_Tensor()函数，位于build/aten/src/ATen/RegisterCPU.cpp
+- at::native::structured_ufunc_add_CPU::structured_ufunc_add_CPU函数，位于build/aten/src/ATen/ops/add_native.h
+- at::native::(anonymous namespace)::add_kernel()函数，位于build/aten/src/ATen/UfuncCPUKernel_add.cpp
+
+
+
+在进入C++层面的第一步，是进行调用参数的解码。因为在Python层面和在C++层面类的体系是不一样的，Python语言中的Tensor类型，在C++层面统一当做PyObject来处理，因此在C++层面需要将PyObject类型的参数再还原成C++层面的Tensor等类型。另外Python语言中函数的参数是一个字典，传参时候的顺序可能有变化，这也需要在C++层面进行识别处理。
+PyTorch为此定义了PythonArgParser类，在函数被调用的入口处进行参数解析：
+
+
 如上面的代码，对于add方法，Pytorch支持两种不同的签名，但是前一种已经过时了，因此实际调用走的都是第二种，调用到Tensor::add()方法。在这段函数的开始部分，原来的Python层面的参数PyObject对象由PythonArgParser进行解析，基本过程是在根据签名字符串构造FunctionSignature对象，然后再调用其方法parse对传入的参数进行匹配。匹配中依赖于两个Python C API: PyTuple_GET_ITEM()和PyDict_GetItem()，在调用Tensor::add()之前，PythonArgParser会通过其tensor()和scalar()方法将PyObject转换成Tensor对象及Scalar对象。
 
 在Tensor::add()的实现中，并不是真正的算子代码，因为刚才只完成了从Python到C++的调用转换，实际的算子实现在不同平台或者不同的加速库下是不同的，还需要一种机制能够将Tensor::add()的调用转换到相应的实现上，在PyTorch中，这个转换是通过Dispatcher完成的。
 
-```C++
-// torch/include/ATen/core/TensorBody.h
-
-// aten::add_.Tensor(Tensor(a!) self, Tensor other, *, Scalar alpha=1) -> Tensor(a!)
-inline at::Tensor & Tensor::add_(const at::Tensor & other, const at::Scalar & alpha) const {
-    return at::_ops::add__Tensor::call(const_cast<Tensor&>(*this), other, alpha);
-}
-
-
-// build/aten/src/ATen/Operators_2.cpp
-
-STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add__Tensor, name, "aten::add_")
-STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add__Tensor, overload_name, "Tensor")
-STATIC_CONST_STR_OUT_OF_LINE_FOR_WIN_CUDA(add__Tensor, schema_str, "add_.Tensor(Tensor(a!) self, Tensor other, *, Scalar alpha=1) -> Tensor(a!)")
-
-// aten::add_.Tensor(Tensor(a!) self, Tensor other, *, Scalar alpha=1) -> Tensor(a!)
-static C10_NOINLINE c10::TypedOperatorHandle<add__Tensor::schema> create_add__Tensor_typed_handle() {
-  return c10::Dispatcher::singleton()
-      .findSchemaOrThrow(add__Tensor::name, add__Tensor::overload_name)
-      .typed<add__Tensor::schema>();
-}
-
-// aten::add_.Tensor(Tensor(a!) self, Tensor other, *, Scalar alpha=1) -> Tensor(a!)
-at::Tensor & add__Tensor::call(at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
-    
-    static auto op = create_add__Tensor_typed_handle();
-    return op.call(self, other, alpha);
-}
-
-```
-
-
-```C++
-THPVariable_add ->
-
-
-```
 
 
 ## 参考
