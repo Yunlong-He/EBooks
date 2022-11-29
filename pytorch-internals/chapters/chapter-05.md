@@ -1865,13 +1865,25 @@ at::native::AVX2::cpu_kernel_vec<> (grain_size=32768, vop=..., op=..., iter=...)
 
 ## 算子调用的过程
 
-我们再看一个简单的例子：
+我们再看一个加法算子__add__的例子：
 ```Python
 import torch
 
 x = torch.randn(2,2, requires_grad=True)
 y = x + 2
 ```
+在Python层面，"y = x + 2" 调用了Tensor类的__add__方法，但是该方法并不是在Python里定义的，而是在_C模块初始化的时候绑定的。 
+由于算子数量繁多并且和硬件及加速库都有关系，在特定的环境下，有的算子要绑定，有的算子就不需要绑定。PyTorch通过代码生成的方式根据算子的配置动态生成下面的方法列表，并绑定到THPVariable上，也就绑定到了Python层面的Tensor类上。
+
+```C++
+//csrc/autograd/generated/python_variable_methods.cpp
+PyMethodDef variable_methods[] = {
+  // These magic methods are all implemented on python object to wrap NotImplementedError
+  {"__add__", castPyCFunctionWithKeywords(TypeError_to_NotImplemented_<THPVariable_add>), METH_VARARGS | METH_KEYWORDS, NULL},
+  ...
+}
+```
+由此可知，Python层面的加法调用，会调用到torch::autograd::THPVariable_add()函数。
 
 在调用上，依次进行如下的调用：
 - torch::autograd::THPVariable_add()函数，位于torch/csrc/autograd/generated/python_variable_methods.cpp
