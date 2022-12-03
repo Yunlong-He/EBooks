@@ -206,8 +206,8 @@ aten_interned_strings.h  ATenOpList.cpp  TensorBody.h  TensorMethods.cpp
 ### 生成代码与自定义代码的关系
 <img src="../images/torchgen.png"/>
 
-#### 自定义实现
-##### 算子声明
+
+#### 算子声明
 
 代码生成的核心是算子的声明，PyTorch中所有的算子都定义在native_functions.yaml中，以算子torch.add(a, b, out=c)为例，其声明如下：
 ```yaml
@@ -224,17 +224,133 @@ aten_interned_strings.h  ATenOpList.cpp  TensorBody.h  TensorMethods.cpp
     MkldnnCPU: mkldnn_add_out
 ```
 
-从之前的算子体系我们就可以看出，在PyTorch中有非常多的非常相似的算子，这些算子之间的差异包括：
-- 功能完全相同，只是名称不同，例如arctanh和atanh
-- 功能完全相同，名称也相同，但参数有一点不同，其中一个算子是直接返回Tensor，另一个算子是在参数列表中指定输出的Tensor（参数名称是out)
-- 功能相同，名称和参数也相同，但
 
-##### 算子实现
+每个算子都有自己的Schema（如"func"所定义的），Schema有三种类型：
+- functional。输出结果是一个新创建的对象
+- inplace。操作直接在self上进行，不会创建新的对象。
+- out。调用者提供名为out的输出参数，输出结果保存在该参数内。
+
+在PyTorch中有一些算子和另一个算子功能完全相同，只是名称不同，例如arctanh和atanh，absolute和abs，对于这种情况，可以用alias来指明。
+
+```yaml
+# Note [Adding an alias]
+# To add an alias do the following:
+#
+# 1) Copy the original functions native_functions.yaml entry, but replace the
+#      original function's name with their own and delete any dispatch
+#      keys for the aliases. Specifying a dispatch key will prevent
+#      autograd from recording the operations the alias performs, which
+#      will stop it from "inheriting" the original operation's autograd behavior.
+# 2) Implement the corresponding functions and have them redispatch to the
+#      original function.
+# 3) Add docstrings to the new function that reference the original function,
+#      and document the method as usual (if it exists.)
+#    (See torch/_torch_docs.py and docs/source/torch.rst if adding a function,
+#     torch/_tensor_docs.py and docs/source/tensors.rst if adding a method,
+#     or module-specific doc bindings (like torch/linalg/__init__.py) if
+#     adding an alias in a namespace.)
+# 4) Update torch/overrides.py consistent with the original function.
+# 5) Update the alias_map in torch/csrc/jit/passes/normalize_ops.cpp.
+# 6) Add aliases argument to existing OpInfo/UnaryUfuncInfo or create new OpInfo/UnaryUfuncInfo entry
+# in op_db list in torch/testing/_internal/common_methods_invocations.py
+#
+# See torch.absolute, an alias for torch.abs, as an example.
+```
+
+### Structured Kernel
+Structured Kernel 是一类特殊的函数，这类函数一定有基础形式和出参(out)两种形式，也可能会支持inplace变体
+
+### 算子实现
 
 ATen算子的核心代码也是在aten/src/ATen下，
 
 
-#### 生成代码
+### 生成过程
+
+#### 生成Register<DispatchKey>.cpp
+我们可以看到生成的文件中有很多RegisterXXX.cpp，其中XXX代表每一种PyTorch所支持的Backend。这些文件使用的模板可以在生成器目录下找到，下面代码忽略了头文件的部分：
+```C++
+// torchgen/packaged/ATen/templates/RegisterDispatchKey.cpp
+
+$extra_cuda_headers
+$external_backend_headers
+$dispatch_headers
+$ops_headers
+// 这几项是头文件部分，生成器根据需要放置必要的头文件，例如对于backend为CPU的情况，就不用生成CUDA的头文件。 $ops_headers是每个算子所需要的头文件，所以占了所有头文件的绝大部分。
+namespace at {
+
+// NB: TORCH_LIBRARY_IMPL must be in an anonymous namespace to avoid
+// ambiguity with conflicting identifiers that may have been defined in
+// at namespace already.
+namespace {
+
+${dispatch_helpers}
+// 这里会放置一些和dispatch相关的工具函数，如对输出参数的创建，调整大小等。
+
+${dispatch_anonymous_definitions}
+
+${static_init_dispatch_registrations}
+
+} // anonymous namespace
+
+${deferred_dispatch_registrations}
+
+namespace ${dispatch_namespace} {
+
+// 所有的算子都声明在当前的namespace中。
+${dispatch_namespaced_definitions}
+
+} // namespace ${dispatch_namespace}
+
+} // namespace at
+```
+
+
+相应的，我们看一下生成后的代码，以RegisterCPU.cpp为例，为了方便阅读，这里忽略头文件部分，并且只保留了一种算子：
+
+```C++ 
+// build/aten/src/ATen/RegisterCPU.cpp
+
+namespace at {
+
+// NB: TORCH_LIBRARY_IMPL must be in an anonymous namespace to avoid
+// ambiguity with conflicting identifiers that may have been defined in
+// at namespace already.
+namespace {
+
+${dispatch_helpers}
+
+struct structured_sgn_out_functional final : public at::native::structured_sgn_out {
+    void set_output_strided...
+    void set_output_raw_strided...
+    const Tensor& maybe_get_output...
+    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
+};
+
+at::Tensor wrapper_sgn(const at::Tensor & self) {
+structured_sgn_out_functional op;
+op.meta(self);
+op.impl(self, *op.outputs_[0]);
+return std::move(op.outputs_[0]).take();
+}
+
+${static_init_dispatch_registrations}
+
+} // anonymous namespace
+
+${deferred_dispatch_registrations}
+
+namespace ${dispatch_namespace} {
+
+${dispatch_namespaced_definitions}
+
+} // namespace ${dispatch_namespace}
+
+} // namespace at
+```
+
+
+
 ##### C++ API
 ##### Python API
 ##### 基于device的dispatcher注册

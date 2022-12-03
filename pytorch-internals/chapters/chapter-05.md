@@ -949,417 +949,35 @@ enum class DispatchKey : uint16_t {
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~ Functionality Keys ~~~~~~~~~~~~~~~~~~~~~~ //
   Dense,
-
-  // Below are non-extensible backends.
-  // These are backends that currently don't have their own overrides for
-  // Autograd/Sparse/Quantized kernels,
-  // and we therefore don't waste space in the runtime operator table allocating
-  // space for them.
-  // If any of these backends ever need to customize, e.g., Autograd, then we'll
-  // need to add a DispatchKey::*Bit for them.
-
-  FPGA, // Xilinx support lives out of tree at
-  // https://gitlab.com/pytorch-complex/vitis_kernels
-
-  // ONNX Runtime, lives out of tree at https://github.com/pytorch/ort and
-  // https://github.com/microsoft/onnxruntime, and is also used to test general
-  // backend/extension machinery in the core. cf:
-  // - test/cpp_extensions/ort_extension.cpp
-  // - test/test_torch.py
-  // - aten/src/ATen/test/extension_backend_test.cpp
-  ORT,
-
-  Vulkan,
-  Metal,
-
-  // A meta tensor is a tensor without any data associated with it.  (They
-  // have also colloquially been referred to as tensors on the "null" device).
-  // A meta tensor can be used to dry run operators without actually doing any
-  // computation, e.g., add on two meta tensors would give you another meta
-  // tensor with the output shape and dtype, but wouldn't actually add anything.
   Meta,
-
-  // See [Note: Per-Backend Functionality Dispatch Keys]
-  Quantized,
-
-  // This backend is to support custom RNGs; it lets you go
-  // to a different kernel if you pass in a generator that is not a
-  // traditional CPUGeneratorImpl/CUDAGeneratorImpl.  To make use of this
-  // key:
-  //  1) set it as a second parameter of at::Generator constructor call in
-  //     the user-defined PRNG class.
-  //  2) use it as a dispatch key while registering custom kernels
-  //     (templatized kernels specialized for user-defined PRNG class)
-  // intended for out of tree use; tested by aten/src/ATen/test/rng_test.cpp
-  CustomRNGKeyId,
-
-  // Here are backends which specify more specialized operators
-  // based on the layout of the tensor.  Note that the sparse backends
-  // are one case where ordering matters: sparse multi-dispatches with
-  // the corresponding dense tensors, and must be handled before them.
-  MkldnnCPU, // registered at build/aten/src/ATen/RegisterMkldnnCPU.cpp
-  // NB: not to be confused with MKLDNN, which is Caffe2 only
-
-  // See [Note: Per-Backend Functionality Dispatch Keys]
   Sparse,
-
   SparseCsrCPU,
   SparseCsrCUDA,
-
-  // Note [Non-Customizable Backend Keys]
-  // Every key above here is considered a "non-customizable backend".
-  // These are backends that will work correctly with autograd, but
-  // but currently don't require separate implementations
-  // for autograd sparse or quantized kernels.
-  // Any new backends that don't need to be customized should go above here.
-  // If an existing backend needs to e.g. override autograd, then we can
-  // consider promoting it into the "BackendComponent" enum
-  //
-  // For all intents and purposes from the perspective of DispatchKeySet,
-  // "non-customizable backend" keys are treated the same way
-  // as other functionality keys
-  EndOfNonCustomizableBackends = SparseCsrCUDA,
-
-  NestedTensor,
-
-  // In some situations, it is not immediately obvious what the correct
-  // backend for function is, because the function in question doesn't
-  // have any "tensor" arguments.  In this case, a BackendSelect function
-  // can be registered to implement the custom determination of the
-  // correct backend.
-  BackendSelect,
-
-  Python,
-
-  // Out-of-core key for Fake Tensor in torchdistx.
-  // See https://pytorch.org/torchdistx/latest/fake_tensor.html
-  Fake,
-
-  // The named dispatch key is set for any tensors with named dimensions.
-  // Although we have a dispatch key for named tensors, for historical reasons,
-  // this dispatch key doesn't do any of the substantive functionality for named
-  // tensor (though, hypothetically, it could!)  At the moment, it's just
-  // responsible for letting us give good error messages when operations
-  // don't support named tensors.
-  //
-  // NB: If you ever consider moving named tensor functionality into
-  // this dispatch key, note that it might be necessary add another dispatch
-  // key that triggers before composite operators, in case a composite operator
-  // has named dimension propagation that doesn't match that of its
-  // constituent parts.
-  Named,
-
-  // The Conjugate dispatch key is set for any tensors that need to perform
-  // conjugation
-  // This is implemented at a dispatch level right before any backends run
-  Conjugate,
-
-  // The Negative dispatch key is set for any tensors that need to perform
-  // negation
-  // This is implemented at a dispatch level right before any backends run
-  Negative,
-
-  ZeroTensor, // registered at build/aten/src/ATen/RegisterZeroTensor.cpp
-
-  // See Note [Out-of-tree vmap+grad prototype]. The purpose of this key
-  // is to insert code after the "autograd subsystem" runs, so this key should
-  // be directly after ADInplaceOrView and all of the autograd keys.
-  FuncTorchDynamicLayerBackMode,
-
-  // Note [ADInplaceOrView key]
-  // ADInplaceOrView key is used by inplace or view ops to register a kernel
-  // that does additional setup for future autograd computation.
-  //
-  // 1. For inplace ops this kernel does version bump
-  // 2. For view ops this kernel does `as_view` setup where we properly setup
-  //    DifferentiableViewMeta on the view tensors.
-  //
-  // For other ops it's fallthrough kernel since there's no extra
-  // work to do.
-  //
-  // Note [Dream: skip VariableType kernel when requires_grad=false]
-  //
-  // In an ideal world where we can skip VariableType kernel for inputs
-  // with requires_grad=false, instead of a fallthrough kernel, we'll
-  // register a kernel shown below to all functional ops as well:
-  // torch::Tensor my_functional_op(...) {
-  //   {
-  //     // Note for every op in VariableType, you need to go through
-  //     // `AutoDispatchBelowADInplaceOrView` guard exactly once to add the
-  //     // key to TLS excluded set. If you don't go through it at all,
-  //     // inplace/view ops called through `at::` inside your backend
-  //     // kernel will dispatch to ADInplaceOrView kernels and do a lot
-  //     // of extra work.
-  //     at::AutoDispatchBelowADInplaceOrView guard;
-  //     at::redispatch::my_functional_op(...);
-  //   }
-  // }
-  // But this work is currently blocked since it adds an extra dispatch
-  // for all ops and it's non-trivial overhead at model level(a few percents).
-  // Thus our current approach takes advantage of the fact every kernel go
-  // through VariableType kernel first and pulls the
-  // `at::AutoDispatchBelowADInplaceOrView` guard of functional ops
-  // up to the `VariableType` kernel. Thus we only add the extra dispatch
-  // to view/inplace ops to minimize its perf impact to real models.
-  ADInplaceOrView,
-  // Note [Alias Dispatch Key : Autograd]
-  // All backends are oblivious to autograd; autograd is handled as a
-  // layer which happens on top of all backends. It inspects the autograd
-  // metadata of all inputs, determines what autograd metadata should be
-  // constructed by the output, and otherwise defers to the backend to
-  // actually do the numeric computation.  Autograd contains
-  // the bulk of this logic.
-
-  // Autograd is now an alias dispatch key which by default maps to all
-  // backend-specific autograd keys.
-  // Backend-specific allow backends to override the default kernel registered
-  // to Autograd key as needed.
-  // For example, XLA wants to define autograd for einsum directly.
-  // Registering a custom autograd implementation at the XLA key won't work
-  // because we process Autograd before XLA.  This key has higher priority and
-  // gets processed first.  You generally should NOT redispatch after handling
-  // autograd here (since that would result in execution of the Autograd
-  // operator, which you're trying to skip).  In AutogradXLA implementations,
-  // you are responsible for handling autograd yourself, or deferring to other
-  // operators which support autograd.
-
-  // Currently we only have backend-specific autograd keys for CPU/CUDA/XLA and
-  // reserved user-defined backends. All other in-tree backends share the
-  // AutogradOther key. We can add specific autograd key for those backends
-  // upon request.
-  AutogradOther,
-
-  // See [Note: Per-Backend Functionality Dispatch Keys]
-  AutogradFunctionality,
-
-  // NestedTensor is an example of something that isn't a "real backend"
-  // (because it mostly consists of redispatching kernels)
-  // but it would like to override autograd functionality in C++.
-  // We can handle cases like this by adding an extra functionality key
-  // exclusively for handling autograd for NestedTensor.
-  // lives out of tree at
-  // https://github.com/pytorch/nestedtensor
-  AutogradNestedTensor,
-
-  Tracer,
-
-  // Autocasting precedes VariableTypeId, to ensure casts are autograd-exposed
-  // and inputs are saved for backward in the post-autocast type.
-  AutocastCPU,
-  AutocastXPU,
-  // Naughtily, AutocastCUDA is also being used for XLA.  In the terminal state,
-  // it probably should get its own Autocast key
-  AutocastCUDA,
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ WRAPPERS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-  // There are a number of alternative modes which may want to handle before
-  // autograd; for example, error checking, tracing, profiling or vmap.  They
-  // go here.
-
-  FuncTorchBatched, // See Note [Out-of-tree vmap+grad prototype]
-  FuncTorchVmapMode, // See Note [Out-of-tree vmap+grad prototype]
-
-  // This is the dispatch key for BatchedTensorImpl, which is used to implement
-  // batching rules for vmap.
-  Batched,
-
-  // When we are inside a vmap, all tensors dispatch on this key.
-  // See Note: [DispatchKey::VmapMode usage] for more details.
-  VmapMode,
-
-  FuncTorchGradWrapper, // See Note [Out-of-tree vmap+grad prototype]
-
-  // Alias and mutation removal.
-  // If some backends want to opt into only alias removal or only mutation
-  // removal,
-  // we can consider adding separate keys dedicated to those individual passes.
-  // See Note [Functionalization Pass In Core] for details.
-  Functionalize,
-
-  // Out-of-core key for Deferred Module Initialization in torchdistx.
-  // See https://pytorch.org/torchdistx/latest/deferred_init.html
-  DeferredInit,
-
-  // Used by Python key logic to know the set of tls on entry to the dispatcher
-  // This kernel assumes it is the top-most non-functorch-related DispatchKey.
-  // If you add a key above, make sure to update the fallback implementation for
-  // this.
-  PythonTLSSnapshot,
-
-  // This key should be at the very top of the dispatcher
-  FuncTorchDynamicLayerFrontMode, // See Note [Out-of-tree vmap+grad prototype]
-
-  // TESTING: This is intended to be a generic testing tensor type id.
-  // Don't use it for anything real; its only acceptable use is within a single
-  // process test.  Use it by creating a TensorImpl with this DispatchKey, and
-  // then registering operators to operate on this type id.  See
-  // aten/src/ATen/core/dispatch/backend_fallback_test.cpp for a usage example.
-  TESTING_ONLY_GenericWrapper,
-
-  // TESTING: This is intended to be a generic testing tensor type id.
-  // Don't use it for anything real; its only acceptable use is within a ingle
-  // process test.  Use it by toggling the mode on and off via
-  // TESTING_ONLY_tls_generic_mode_set_enabled and then registering operators
-  // to operate on this type id.  See
-  // aten/src/ATen/core/dispatch/backend_fallback_test.cpp
-  // for a usage example
-  TESTING_ONLY_GenericMode,
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ FIN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-  EndOfFunctionalityKeys, // End of functionality keys.
+  // ...
 
   // ~~~~~~~~~~~~~~ "Dense" Per-Backend Dispatch keys ~~~~~~~~~~~~~~~~~~~~ //
-  // Here are backends which you think of as traditionally specifying
-  // how to implement operations on some device.
-
-  // See Note [The Ordering of Per-Backend Dispatch Keys Matters!]
   StartOfDenseBackends,
   CPU, // registered at build/aten/src/ATen/RegisterCPU.cpp
   CUDA, // registered at build/aten/src/ATen/RegisterCUDA.cpp
-  HIP, // NB: I think this is not actually used, due to Note [Masquerading as
-  // CUDA]
-  XLA, // lives out of tree at https://github.com/pytorch/xla
-  MPS, // registered at build/aten/src/ATen/RegisterMPS.cpp
-  IPU, // lives out of tree at https://github.com/graphcore/poptorch
-  XPU, // For out of tree Intel's heterogeneous computing plug-in
-  HPU, // For out of tree & closed source integration of HPU / Habana
-  VE, // For out of tree & closed source integration of SX-Aurora / NEC
-  Lazy, // For lazy tensor backends
-  // Here are reserved backends for user-defined backends, see Note [Private use
-  // DispatchKey]
-  // To see some example about how to use this, check out ORT
-  PrivateUse1,
-  PrivateUse2,
-  PrivateUse3,
-  EndOfDenseBackends = PrivateUse3,
+   // ...
 
   // ~~~~~~~~~~~~~~ "Quantized" Per-Backend Dispatch keys ~~~~~~~~~~~~~~~~ //
-  // keys starting with an _ are not currently used,
-  // but are needed to ensure that every backend is indexed correctly.
-
-  // See Note [The Ordering of Per-Backend Dispatch Keys Matters!]
   StartOfQuantizedBackends,
   QuantizedCPU, // registered at build/aten/src/ATen/RegisterQuantizedCPU.cpp
   QuantizedCUDA, // registered at build/aten/src/ATen/RegisterQuantizedCUDA.cpp
-  _QuantizedHIP,
-  _QuantizedXLA,
-  _QuantizedMPS,
-  _QuantizedIPU,
-  QuantizedXPU, // For out of tree Intel's heterogeneous computing plug-in
-  _QuantizedHPU,
-  _QuantizedVE,
-  _QuantizedLazy,
-  _QuantizedPrivateUse1,
-  _QuantizedPrivateUse2,
-  _QuantizedPrivateUse3,
-  EndOfQuantizedBackends = _QuantizedPrivateUse3,
+  // ...
 
   // ~~~~~~~~~~~~~~ "Sparse" Per-Backend Dispatch keys ~~~~~~~~~~~~~~~~~~~ //
-  // keys starting with an _ are not currently used,
-  // but are needed to ensure that every backend is indexed correctly.
-
-  // See Note [The Ordering of Per-Backend Dispatch Keys Matters!]
   StartOfSparseBackends,
   SparseCPU, // registered at build/aten/src/ATen/RegisterSparseCPU.cpp
   SparseCUDA, // registered at build/aten/src/ATen/RegisterSparseCUDA.cpp
-  SparseHIP, // TODO: I think this is not actually used, due to Note
-  // [Masquerading as CUDA]
-  _SparseXLA,
-  _SparseMPS,
-  _SparseIPU,
-  SparseXPU, // For out of tree Intel's heterogeneous computing plug-in
-  _SparseHPU,
-  SparseVE, // For out of tree & closed source integration of SX-Aurora / NEC
-  _SparseLazy,
-  _SparsePrivateUse1,
-  _SparsePrivateUse2,
-  _SparsePrivateUse3,
-  EndOfSparseBackends = _SparsePrivateUse3,
-
-  // ~~~~~~~~~~~~~~ "NestedTensor" Per-Backend Dispatch keys ~~~~~~~~~~~~~~~~~~~
-  // //
-  // keys starting with an _ are not currently used,
-  // but are needed to ensure that every backend is indexed correctly.
-
-  // See Note [The Ordering of Per-Backend Dispatch Keys Matters!]
-  StartOfNestedTensorBackends,
-  // registered at build/aten/src/ATen/RegisterNestedTensorCPU.cpp
-  NestedTensorCPU,
-  // registered at build/aten/src/ATen/RegisterNestedTensorCUDA.cpp
-  NestedTensorCUDA,
-  _NestedTensorHIP,
-  _NestedTensorXLA,
-  _NestedTensorMPS,
-  _NestedTensorIPU,
-  _NestedTensorXPU,
-  _NestedTensorHPU,
-  _NestedTensorVE,
-  _NestedTensorLazy,
-  _NestedTensorPrivateUse1,
-  _NestedTensorPrivateUse2,
-  _NestedTensorPrivateUse3,
-  EndOfNestedTensorBackends = _NestedTensorPrivateUse3,
-
+  // ...
+ 
   // ~~~~~~~~~~~~~~ "Autograd" Per-Backend Dispatch keys ~~~~~~~~~~~~~~~~~ //
-  // keys starting with an _ are not currently used,
-  // but are needed to ensure that every backend is indexed correctly.
-
-  // See Note [The Ordering of Per-Backend Dispatch Keys Matters!]
   StartOfAutogradBackends,
   AutogradCPU,
   AutogradCUDA,
-  _AutogradHIP,
-  AutogradXLA,
-  AutogradMPS,
-  AutogradIPU,
-  AutogradXPU,
-  AutogradHPU,
-  _AutogradVE,
-  AutogradLazy,
-  // Here are some reserved pre-autograd keys for user-defined backends, see
-  // Note [Private use DispatchKey]
-  AutogradPrivateUse1,
-  AutogradPrivateUse2,
-  AutogradPrivateUse3,
-  EndOfAutogradBackends = AutogradPrivateUse3,
-  // If we add a new per-backend functionality key that has higher priority
-  // than Autograd, then this key should be updated.
-  EndOfRuntimeBackendKeys = EndOfAutogradBackends,
-
-  // ~~~~~~~~~~~~~~~~~~~~~~ Alias Dispatch Keys ~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-  // Note [Alias Dispatch Keys]
-  // Alias dispatch keys are synthetic dispatch keys which map to multiple
-  // runtime dispatch keys. Alisa keys have precedence, but they are always
-  // lower precedence than runtime keys. You can register a kernel to an
-  // alias key, the kernel might be populated to the mapped runtime keys
-  // during dispatch table computation.
-  // If a runtime dispatch key has multiple kernels from alias keys, which
-  // kernel wins is done based on the precedence of alias keys (but runtime
-  // keys always have precedence over alias keys).
-  // Alias keys won't be directly called during runtime.
-
-  // See Note [Alias Dispatch Key : Autograd]
-  Autograd,
-  CompositeImplicitAutograd, // registered at
-  // build/aten/src/ATen/RegisterCompositeImplicitAutograd.cpp
-  CompositeExplicitAutograd, // registered at
-  // build/aten/src/ATen/RegisterCompositeExplicitAutograd.cpp
-
-  // Define an alias key to represent end of alias dispatch keys.
-  // If you add new alias keys after Autograd, please also update it here.
-  StartOfAliasKeys = Autograd,
-  EndOfAliasKeys = CompositeExplicitAutograd, //
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~ BC ALIASES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ //
-  // The aliases exist for backwards compatibility reasons, they shouldn't
-  // be used
-  CPUTensorId = CPU,
-  CUDATensorId = CUDA,
-  DefaultBackend = CompositeExplicitAutograd,
-  PrivateUse1_PreAutograd = AutogradPrivateUse1,
-  PrivateUse2_PreAutograd = AutogradPrivateUse2,
-  PrivateUse3_PreAutograd = AutogradPrivateUse3,
-  Autocast = AutocastCUDA,
+  // ...
 };
 ```
 
@@ -1865,7 +1483,7 @@ at::native::AVX2::cpu_kernel_vec<> (grain_size=32768, vop=..., op=..., iter=...)
 
 ## 算子调用的过程
 
-我们再看一个加法算子__add__的例子：
+我们看一个加法算子__add__的例子：
 ```Python
 import torch
 

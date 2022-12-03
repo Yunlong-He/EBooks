@@ -180,6 +180,32 @@ manual_kernel_registration: True
 use_const_ref_for_mutable_tensors: True
 ```
 
+
+### Alias
+```yaml
+# Note [Adding an alias]
+# To add an alias do the following:
+#
+# 1) Copy the original functions native_functions.yaml entry, but replace the
+#      original function's name with their own and delete any dispatch
+#      keys for the aliases. Specifying a dispatch key will prevent
+#      autograd from recording the operations the alias performs, which
+#      will stop it from "inheriting" the original operation's autograd behavior.
+# 2) Implement the corresponding functions and have them redispatch to the
+#      original function.
+# 3) Add docstrings to the new function that reference the original function,
+#      and document the method as usual (if it exists.)
+#    (See torch/_torch_docs.py and docs/source/torch.rst if adding a function,
+#     torch/_tensor_docs.py and docs/source/tensors.rst if adding a method,
+#     or module-specific doc bindings (like torch/linalg/__init__.py) if
+#     adding an alias in a namespace.)
+# 4) Update torch/overrides.py consistent with the original function.
+# 5) Update the alias_map in torch/csrc/jit/passes/normalize_ops.cpp.
+# 6) Add aliases argument to existing OpInfo/UnaryUfuncInfo or create new OpInfo/UnaryUfuncInfo entry
+# in op_db list in torch/testing/_internal/common_methods_invocations.py
+#
+# See torch.absolute, an alias for torch.abs, as an example.
+```
 ## autogen
 TODO
 
