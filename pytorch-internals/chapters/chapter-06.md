@@ -174,9 +174,86 @@ ATen的native函数是PyTorch目前主推的operator机制，作为对比，老�
 
 ```
 
-这部分代码生成的入口在gen.py中，调用的时候直接调用torchgen.main()即可。其主要参数包括：
+这部分代码生成的主要执行文件是gen.p中，测试调用的时候直接调用torchgen.main()即可。其主要参数包括：
 - source-path: 缺省为aten/src/ATen，代表ATen源代码的路径
 - install_dir: 缺省为build/aten/src/ATen，代表输出的路径
+
+### 代码生成的入口
+在编译PyTorch时，代码生成的入口在cmake/Codegen.cmake中。根据其中注释可以了解到，因为PyTorch在不断发展中，代码生成的文件发生变化是
+很正常的，但是cmake命令所依赖的输入是固定的，所以这里用了一个小trick，将生成的文件列表写入到一些cmake文件中，之后的编译过程依赖这些
+cmake文件，这样当代码重新生成之后，这些cmake文件也被更新了，只有对此有依赖的编译过程也会被重新执行。
+
+```cmake
+set(GEN_COMMAND
+      "${PYTHON_EXECUTABLE}" -m torchgen.gen
+      --source-path ${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen
+      --install_dir ${CMAKE_BINARY_DIR}/aten/src/ATen
+      ${GEN_PER_OPERATOR_FLAG}
+      ${GEN_ROCM_FLAG}
+      ${GEN_MPS_FLAG}
+      ${CUSTOM_BUILD_FLAGS}
+  )
+
+  file(GLOB_RECURSE headers_templates "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/templates/*\.h")
+  file(GLOB_RECURSE sources_templates "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/templates/*\.cpp")
+  set(declarations_yaml_templates "")
+
+  foreach(gen_type "headers" "sources" "declarations_yaml")
+    # The codegen outputs may change dynamically as PyTorch is
+    # developed, but add_custom_command only supports dynamic inputs.
+    #
+    # We work around this by generating a .cmake file which is
+    # included below to set the list of output files. If that file
+    # ever changes then cmake will be re-run automatically because it
+    # was included and so we get fully dynamic outputs.
+
+    set("GEN_COMMAND_${gen_type}"
+        ${GEN_COMMAND}
+        --generate ${gen_type}
+        --output-dependencies ${CMAKE_BINARY_DIR}/aten/src/ATen/generated_${gen_type}.cmake
+    )
+
+    # Dry run to bootstrap the output variables
+    execute_process(
+        COMMAND ${GEN_COMMAND_${gen_type}} --dry-run
+        RESULT_VARIABLE RETURN_VALUE
+        WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/..
+    )
+
+    if(NOT RETURN_VALUE EQUAL 0)
+      message(FATAL_ERROR "Failed to get generated_${gen_type} list")
+    endif()
+
+    include("${CMAKE_BINARY_DIR}/aten/src/ATen/generated_${gen_type}.cmake")
+    include("${CMAKE_BINARY_DIR}/aten/src/ATen/core_generated_${gen_type}.cmake")
+    include("${CMAKE_BINARY_DIR}/aten/src/ATen/cpu_vec_generated_${gen_type}.cmake")
+    include("${CMAKE_BINARY_DIR}/aten/src/ATen/cuda_generated_${gen_type}.cmake")
+    include("${CMAKE_BINARY_DIR}/aten/src/ATen/ops_generated_${gen_type}.cmake")
+
+    message(STATUS "${gen_type} outputs: ${gen_outputs}")
+
+    add_custom_command(
+      COMMENT "Generating ATen ${gen_type}"
+      OUTPUT
+        ${generated_${gen_type}}
+        ${cuda_generated_${gen_type}}
+        ${core_generated_${gen_type}}
+        ${cpu_vec_generated_${gen_type}}
+        ${ops_generated_${gen_type}}
+        ${CMAKE_BINARY_DIR}/aten/src/ATen/generated_${gen_type}.cmake
+        ${CMAKE_BINARY_DIR}/aten/src/ATen/ops_generated_${gen_type}.cmake
+        ${CMAKE_BINARY_DIR}/aten/src/ATen/core_generated_${gen_type}.cmake
+        ${CMAKE_BINARY_DIR}/aten/src/ATen/cpu_vec_generated_${gen_type}.cmake
+        ${CMAKE_BINARY_DIR}/aten/src/ATen/cuda_generated_${gen_type}.cmake
+      COMMAND ${GEN_COMMAND_${gen_type}}
+      DEPENDS ${all_python} ${${gen_type}_templates}
+        ${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/native_functions.yaml
+        ${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/tags.yaml
+      WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/..
+    )
+  endforeach()
+```
+
 
 ### 生成的文件
 最终生成的文件如下：
@@ -232,30 +309,6 @@ aten_interned_strings.h  ATenOpList.cpp  TensorBody.h  TensorMethods.cpp
 
 在PyTorch中有一些算子和另一个算子功能完全相同，只是名称不同，例如arctanh和atanh，absolute和abs，对于这种情况，可以用alias来指明。
 
-```yaml
-# Note [Adding an alias]
-# To add an alias do the following:
-#
-# 1) Copy the original functions native_functions.yaml entry, but replace the
-#      original function's name with their own and delete any dispatch
-#      keys for the aliases. Specifying a dispatch key will prevent
-#      autograd from recording the operations the alias performs, which
-#      will stop it from "inheriting" the original operation's autograd behavior.
-# 2) Implement the corresponding functions and have them redispatch to the
-#      original function.
-# 3) Add docstrings to the new function that reference the original function,
-#      and document the method as usual (if it exists.)
-#    (See torch/_torch_docs.py and docs/source/torch.rst if adding a function,
-#     torch/_tensor_docs.py and docs/source/tensors.rst if adding a method,
-#     or module-specific doc bindings (like torch/linalg/__init__.py) if
-#     adding an alias in a namespace.)
-# 4) Update torch/overrides.py consistent with the original function.
-# 5) Update the alias_map in torch/csrc/jit/passes/normalize_ops.cpp.
-# 6) Add aliases argument to existing OpInfo/UnaryUfuncInfo or create new OpInfo/UnaryUfuncInfo entry
-# in op_db list in torch/testing/_internal/common_methods_invocations.py
-#
-# See torch.absolute, an alias for torch.abs, as an example.
-```
 
 ### Structured Kernel
 Structured Kernel 是一类特殊的函数，这类函数一定有基础形式和出参(out)两种形式，也可能会支持inplace变体
@@ -267,8 +320,47 @@ ATen算子的核心代码也是在aten/src/ATen下，
 
 ### 生成过程
 
+#### 解析并生成NativeFunction列表
+
+代码生成是围绕NativeFunction进行的，几乎所有的NativeFunction都被定义在native_functions.yaml中，生成器通过调用parse_native_yaml_struct()函数对其进行解析，解析的步骤大概如下：
+- 对每一个"func"的声明进行解析，生成对应的NativeFunction对象，同时构建dispatch_key到算子的映射
+- 补全声明中缺失的一些NativeFunction，例如一个算子有inplace变体和out=变体，但是没有functional变体，生成器会生成一个简单的functional实现。或者如果一个算子有inplace变体和functional变体，但是没有out=变体，生成器会生成out=的变体实现，由此对于每个算子，生成器都可以生成相应的NativeFunctionGroup，每个Group内部都有functional和out=的变体实现。
+- 根据第一步得到的dispatch_key到算子的映射，重新生成一个以dipatch_key为关键字的字典，每个dispatch_key有一个OperatorName到BackendMetadata的字典，包含了所有相关算子的名称及实现。
+
 #### 生成Register<DispatchKey>.cpp
-我们可以看到生成的文件中有很多RegisterXXX.cpp，其中XXX代表每一种PyTorch所支持的Backend。这些文件使用的模板可以在生成器目录下找到，下面代码忽略了头文件的部分：
+在生成器的model.py中，定义了支持的所有DispatchKey:
+```Python
+dispatch_keys = [
+    DispatchKey.CPU,
+    DispatchKey.SparseCPU,
+    DispatchKey.SparseCsrCPU,
+    DispatchKey.MkldnnCPU,
+    DispatchKey.CUDA,
+    DispatchKey.MPS,
+    DispatchKey.SparseCUDA,
+    DispatchKey.SparseCsrCUDA,
+    DispatchKey.QuantizedCPU,
+    DispatchKey.QuantizedCUDA,
+    DispatchKey.CompositeImplicitAutograd,
+    DispatchKey.CompositeExplicitAutograd,
+    DispatchKey.NestedTensorCPU,
+    DispatchKey.NestedTensorCUDA,
+    # Meta is a magic key: it is automatically generated for structured
+    # kernels
+    DispatchKey.Meta,
+    DispatchKey.ZeroTensor,
+]
+```
+
+生成器会为每个DispatchKey生成对应的RegisterXXX.cpp，这些文件使用的模板可以在生成器目录下找到，
+
+Resiger{dispatch}.cpp的主要作用包括：
+- 对给定的dispatch key，将所有算子的primary函数注册到dispatcher，以便可以在PyTorch中进行调用。
+- 创建封装函数（wrapper function）,这些封装函数在CPU下没有额外的操作，但是在其他的情况下会执行DeviceGuard操作。
+- 创建算子的C++ API，从而可以支持在C++层面的直接调用，此时不需要经过dispatcher的分发。
+
+我们看一下生成后的代码，以RegisterCPU.cpp为例，为了方便阅读，这里忽略头文件部分，并且只保留了一种算子add()：
+
 ```C++
 // torchgen/packaged/ATen/templates/RegisterDispatchKey.cpp
 
@@ -276,6 +368,7 @@ $extra_cuda_headers
 $external_backend_headers
 $dispatch_headers
 $ops_headers
+
 // 这几项是头文件部分，生成器根据需要放置必要的头文件，例如对于backend为CPU的情况，就不用生成CUDA的头文件。 $ops_headers是每个算子所需要的头文件，所以占了所有头文件的绝大部分。
 namespace at {
 
@@ -289,72 +382,81 @@ ${dispatch_helpers}
 
 ${dispatch_anonymous_definitions}
 
-${static_init_dispatch_registrations}
+// helper functions  
+struct structured_ufunc_add_CUDA_functional final : public at::native::structured_ufunc_add_CUDA {
+  // ...
+}
 
-} // anonymous namespace
-
-${deferred_dispatch_registrations}
-
-namespace ${dispatch_namespace} {
-
-// 所有的算子都声明在当前的namespace中。
-${dispatch_namespaced_definitions}
-
-} // namespace ${dispatch_namespace}
-
-} // namespace at
-```
-
-
-相应的，我们看一下生成后的代码，以RegisterCPU.cpp为例，为了方便阅读，这里忽略头文件部分，并且只保留了一种算子：
-
-```C++ 
-// build/aten/src/ATen/RegisterCPU.cpp
-
-namespace at {
-
-// NB: TORCH_LIBRARY_IMPL must be in an anonymous namespace to avoid
-// ambiguity with conflicting identifiers that may have been defined in
-// at namespace already.
-namespace {
-
-${dispatch_helpers}
-
-struct structured_sgn_out_functional final : public at::native::structured_sgn_out {
-    void set_output_strided...
-    void set_output_raw_strided...
-    const Tensor& maybe_get_output...
-    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
-};
-
-at::Tensor wrapper_sgn(const at::Tensor & self) {
-structured_sgn_out_functional op;
-op.meta(self);
-op.impl(self, *op.outputs_[0]);
+at::Tensor wrapper_add_Tensor(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+structured_ufunc_add_CUDA_functional op;
+op.meta(self, other, alpha);
+op.impl(self, other, alpha, *op.outputs_[0]);
 return std::move(op.outputs_[0]).take();
 }
 
-${static_init_dispatch_registrations}
+// 生成器使用下列代码替换 ${static_init_dispatch_registrations}
+
+TORCH_LIBRARY_IMPL(aten, CUDA, m) {
+
+    m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
+  // ...
+}
 
 } // anonymous namespace
 
 ${deferred_dispatch_registrations}
 
-namespace ${dispatch_namespace} {
+// 所有的算子都声明在当前的namespace中。
+// 代码生成器会使用下列代码替换 ${dispatch_namespaced_definitions}
+namespace cpu { // 对RegisterCPU.cpp来说，用cpu替换了 ${dispatch_namespace}
+at::Tensor add(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  return wrapper_add_Tensor(self, other, alpha);
+} 
 
-${dispatch_namespaced_definitions}
-
-} // namespace ${dispatch_namespace}
+} // namespace ${dispatch_namespace}   对RegisterCPU.cpp来说，这里是cpu
 
 } // namespace at
 ```
 
+#### UfuncCPU_{name}.cpp和UfuncGPU_{name}.cpp
+
+这里先介绍一下ufunc（universe function）。下面是numpy中关于ufunc的介绍。
+
+> 通函数（或简称为ufunc ）是一种ndarrays 以逐元素方式操作的函数，支持数组广播，类型转换和其他一些标准功能。也就是说，ufunc是一个函数的“矢量化”
+> 包装器，它接受固定数量的特定输入并产生固定数量的特定输出。
+> 在NumPy中，通函数是numpy.ufunc类的实例。许多内置函数都是在编译的C代码中实现的。 基本的ufuncs对标量进行操作，但也有一种通用类型，基本元素是
+> 子数组（向量，矩阵等，广播是在其他维度上完成的。也可以ufunc使用frompyfunc工厂函数生成自定义实例。
+
+简单理解就是，符合ufunc要求的函数支持逐元素的操作，这种函数在硬件层面是有比较好的优化空间的，在CPU上和GPU上都有相应的库支持，因此在PyTorch中，
+目前只针对CPU和CUDA生成ufunc，对其他的dispatch key则不做处理。
+
+下面是add()算子的对应ufunc实现，这部分代码在前面介绍算子调用过程时已经提到过。
+```C++
+// ./build/aten/src/ATen/UfuncCPU_add.cpp
+
+namespace meta {
+struct TORCH_API structured_add_Tensor : public TensorIteratorBase {
+    void meta(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha);
+};
+}
+
+namespace native {
+struct TORCH_API structured_ufunc_add_CPU : public at::meta::structured_add_Tensor {
+void impl(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, const at::Tensor & out);
+};
+
+using add_fn = void(*)(TensorIteratorBase&, const at::Scalar &);
+DECLARE_DISPATCH(add_fn, add_stub);
+DEFINE_DISPATCH(add_stub);
+
+TORCH_IMPL_FUNC(ufunc_add_CPU)(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, const at::Tensor & out) {
+  add_stub(device_type(), *this, alpha);
+}
+}
+```
+当然为了调用到开发者自己实现的ufunc kernel，生成器还生成了一系列UfuncCPUKernel_{name}.cpp文件，生成的代码这里不再赘述。
 
 
-##### C++ API
-##### Python API
-##### 基于device的dispatcher注册
-##### 基于算子名称的dispatcher注册
 
 在core/ATenOpList.cpp中，生成了所有op的OperatorName列表。
 ```C++

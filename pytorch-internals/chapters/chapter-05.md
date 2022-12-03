@@ -981,6 +981,13 @@ enum class DispatchKey : uint16_t {
 };
 ```
 
+关于DispatchKey，有以下几条约定：
+- CompositeExplicitAutograd和CompositeImplicitAutograd，这两个DispatchKey支持所有的backend
+- STRUCTURED_DISPATCH_KEYS，支持MPS，CUDA和CPU。
+- UFUNC_DISPATCH_KEYS，支持CUDA和CPU
+
+
+
 ### DispatchKeySet
 
 所有的算子都是注册在Dispatcher里的，在调用的时候，根据函数名词和传递的参数类型，dispatcher会寻找相应的实现并进行调用；
@@ -1072,6 +1079,49 @@ private:
 ```
 
 <img src="../images/dispatcher.png"/>
+
+Dispatcher的概念和C++中的虚函数表非常像，维护的都是从名称到实际实现的映射关系，PyTorch团队起初也是用虚函数表实现分发机制的，但是后来发现有一些需求是无法通过虚函数表来实现的，于是对分发机制进行了重写。
+
+<img src="../images/dispatcher_1.webp"/>
+
+现在我们知道算子都是注册到dispatcher上的，但是我们在Python层面调用的时候，并没有指定dispatch key这样的参数，那么在实际运行过程中是如何计算dispatch key并选择相应的实现的呢？（下面部分内容来自https://zhuanlan.zhihu.com/p/376495783）
+这里就用到了前面提到的dispatch key set，它是dispatch key的一个bitset。大致来讲，我们综合来自不同来源的dispatch key sets，给我们一个最终的dispatch key set；然后，我们在这个set中挑选优先级最高的key（dispatch keys按某种优先级隐式有序），这就是我们一次的dispatch的结果。那么，这些dispatch key sets的来源是什么？
+
+> 每个tensor输入都有一个由该tensor上的所有dispatch key组成的dispatch key set（直观地说，这些dispatch key的值会是 “CPU” 这样的东西，告诉我们该Tensor是一个CPU Tensor，应该由dispatch表中的CPU handler来处理）。
+> 我们还有一个local include set，用于 "模态 "功能，例如tracing，它不与任何tensor相关联，而是某种线程的本地模态，用户可以在某些范围内打开或关闭。最后，我们有一个global set，它包含了始终应该被考虑的dispatch key。（自从写下这张PPT后，Autograd已经从global set转移到了tensor。然而，系统的high level结构并没有改变。）
+
+除了这些，还有一个local exclude set，用于将其中的key排除在dispatch之外。一个常见的case是一个handler负责处理一个key，然后通过local exclude set屏蔽自己，这样我们就不会在以后尝试重复调用这个handler。
+<img src="../images/dispatcher_2.webp"/>
+
+下图是dispatch机制运行的最典型的例子（这个图已经过时了，因为Autograd不在全局中，而是在Tensor上），是它如何处理autograd。从上到下浏览该图。在最上面，Autograd在global set中，而local exclude set是空的。当我们做dispatch时，我们发现autograd是最高优先级的key（它的优先级比CPU高），我们就把它dispatch给op的autograd handler。在autograd handler中，我们做了一些autograd所需的事情，但更重要的是，我们创建了一个RAII guard：AutoNonVariableTypeMode，它将autograd添加到local exclude set，防止autograd被再次成为这个op本次运行中的handler。当我们重新dispatch时，我们现在跳过autograd key（因为它被排除在外）并dispatch到下一个key，即本例中的CPU。由于TLS在整个dispatch tree的后续部分都得到了维护，所有其他的后续dispatch也绕过了autograd。最后，我们从我们的函数中返回，RAII guard将Autograd从local exclude set中移除，以便随后的op dispatch可以再次触发autograd handler。
+<img src="../images/dispatcher_3.webp"/>
+
+另一个类似的例子是tracing，它与autograd类似，当我们进入tracing handler时，我们用ExcludeDispatchKeyGuard禁用嵌套调用的tracing。它与autograd的不同之处在于最初是如何触发tracing的：tracing是由local include set中的一个dispatch key来启用的，当你打开tracing时（IncludeDispatchKeyGuard被创建），这个key会被添加到local include set，而不是Autograd的global dispatch key（update：现在是tensor上的dispatch key）。
+<img src="../images/dispatcher_4.webp"/>
+
+最后一个例子是BackendSelect key，它的与普通的key有点不同。Backend Select解决的问题是：有时候，默认的dispatch key选择算法不知道如何计算出正确的key应该是什么。其中一个明显的例子是工厂函数，它没有任何来自Tensor的依据来决定dispatch到哪一个key。BackendSelect在global dispatch key set中，但只为少数op注册（对于其他op，它是一个会被直接无视的key）。BackendSelect handler检查参数并决定最终的key是什么，然后绕过key的计算直接dispatch到该key。
+<img src="../images/dispatcher_5.webp"/>
+
+这里是一些使用BackendSelect的算子，在编译期间，由生成器生成：
+```C++
+// aten::hamming_window.periodic_alpha_beta(int window_length, bool periodic, float alpha, float beta, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None) -> Tensor
+C10_ALWAYS_INLINE
+at::Tensor hamming_window_periodic_alpha_beta(int64_t window_length, bool periodic, double alpha, double beta, c10::optional<at::ScalarType> dtype, c10::optional<at::Layout> layout, c10::optional<at::Device> device, c10::optional<bool> pin_memory) {
+  DispatchKeySet _dk = c10::DispatchKeySet(c10::computeDispatchKey(dtype, layout, device));
+  return at::_ops::hamming_window_periodic_alpha_beta::redispatch(
+      _dk, window_length, periodic, alpha, beta, dtype, layout, device, pin_memory);
+}
+// aten::kaiser_window(int window_length, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None) -> Tensor
+C10_ALWAYS_INLINE
+at::Tensor kaiser_window(int64_t window_length, c10::optional<at::ScalarType> dtype, c10::optional<at::Layout> layout, c10::optional<at::Device> device, c10::optional<bool> pin_memory) {
+  DispatchKeySet _dk = c10::DispatchKeySet(c10::computeDispatchKey(dtype, layout, device));
+  return at::_ops::kaiser_window::redispatch(
+      _dk, window_length, dtype, layout, device, pin_memory);
+}
+```
+
+该张PPT总结了在PyTorch中dispatch一些op时，最常见的handler序列的一些情况。大多数时候，都是先是autograd，然后是backend（如果你是一个工厂函数，中间还有一个backend select）。对于XLA，还有一个XLA PreAutograd key（update：这个key现在被简化为AutogradXLA），用来覆盖Autograd key的行为。当然，如果你一下子打开PyTorch的每一个功能，最终可能会在很多handler上停下来。这些handler的处理顺序很重要，因为handler间不一定是符合交换律。
+<img src="../images/dispatcher_6.webp"/>
 
 ## 算子注册过程
 
@@ -1546,7 +1596,7 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
 }
 ```
 
-可以看到，在这个函数里，原有的PyObject类型的原始Python类型被转化成Tensor类型，但是其参数可能是Tensor，也可能是普通的数，这两种情况都是Python API所支持的。而参数的不同可能会对应不同的实现，因此PyTorch会根据参数的不同分别处理。但是最后都是调用"self.add()"方法，也就是下面的实现。
+在进入C++层面的第一步，是进行调用参数的解码。因为在Python层面和在C++层面类的体系是不一样的，Python语言中的Tensor类型，在C++层面统一当做PyObject来处理，因此在C++层面需要将PyObject类型的参数再还原成C++层面的Tensor等类型。另外Python语言中函数的参数是一个字典，传参时候的顺序可能有变化，这也需要在C++层面进行识别处理。在这个函数里，原有的PyObject类型的原始Python类型被转化成Tensor类型，但是Python API可能会对外暴露不同的形式，例如参数顺序的不同，因此PyTorch会根据方法签名的不同分别处理。但是最后都是调用"self.add()"方法，也就是下面的实现。
 
 注意：这个文件是生成器基于“./torchgen/packaged/ATen/templates/TensorBody.h”生成的，在原有代码基础上加了算子的方法。
 
@@ -1589,10 +1639,13 @@ at::Tensor add_Tensor::redispatch(c10::DispatchKeySet dispatchKeySet, const at::
 }
 ```
 
-其实，单纯这样顺序看下去，我们是很难知道dispatcher分发到哪里去的，但是如果对相应算子的schema比较熟悉，可以知道生成器已经帮我们注册了相应的实现：
+从这里我们可以看到，dispatcher开始接管调用，查找对应backend的算子并进行调用。如果我们有编译后的代码，可以在编译过程中生成的代码进行看到，生成器已经帮我们注册了相应的CPU实现：
 
 ```C++
 // ./build/aten/src/ATen/RegisterCPU.cpp
+
+namespace at {
+namespace {
 
 struct structured_ufunc_add_CPU_functional final : public at::native::structured_ufunc_add_CPU {
   // ...
@@ -1610,9 +1663,51 @@ TORCH_LIBRARY_IMPL(aten, CPU, m) {
   m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
   // ...
 }
+} // anonymous namespace
+
+namespace cpu {
+at::Tensor add(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  return wrapper_add_Tensor(self, other, alpha);
+} 
+} // namespace cpu
+} // namespace at
 ```
 
-当我们看到meta()方法和impl()这两个方法的时候，就可以知道add方法是structured kernel，其中meta()方法用于检查
+当然也有GPU的实现，代码的形式非常类似，名称也一样，为了防止命名冲突，使用了backend相关及匿名的namespace来进行区分。
+
+```C++
+// ./build/aten/src/ATen/RegisterCPU.cpp
+
+namespace at {
+namespace {
+
+// helper functions  
+struct structured_ufunc_add_CUDA_functional final : public at::native::structured_ufunc_add_CUDA {
+  // ...
+}
+
+at::Tensor wrapper_add_Tensor(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+structured_ufunc_add_CUDA_functional op;
+op.meta(self, other, alpha);
+op.impl(self, other, alpha, *op.outputs_[0]);
+return std::move(op.outputs_[0]).take();
+}
+
+TORCH_LIBRARY_IMPL(aten, CUDA, m) {
+
+    m.impl("add.Tensor", TORCH_FN(wrapper_add_Tensor));
+  // ...
+}
+} // anonymous namespace
+
+namespace cuda {
+at::Tensor add(const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  return wrapper_add_Tensor(self, other, alpha);
+} 
+} // namespace cuda
+} // namespace at
+```
+当我们看到meta()方法和impl()这两个方法的时候，就可以知道add方法是structured kernel，其中meta()方法用于确保参数符合格式要求，impl()方法负责实现计算逻辑：
 
 ```C++
 // ./build/aten/src/ATen/UfuncCPU_add.cpp
@@ -1703,24 +1798,12 @@ C10_ALWAYS_INLINE Vectorized<T> add(Vectorized<T> self, Vectorized<T> other, Vec
 
 ```
 
+综合起来，调用add()方法的时候，开发者需要实现的知识最后的ufunc::add()函数，这样就大大减轻了开发者的工作。
+<img src="../images/call_stack_add.png"/>
+
 但是，并不是所有的算子都是这样的调用路径的。
 
 
-在调用上，依次进行如下的调用：
-- torch::autograd::THPVariable_add()函数，位于torch/csrc/autograd/generated/python_variable_methods.cpp
-- at::(anonymous namespace)::wrapper_add_Tensor()函数，位于build/aten/src/ATen/RegisterCPU.cpp
-- at::native::structured_ufunc_add_CPU::structured_ufunc_add_CPU函数，位于build/aten/src/ATen/ops/add_native.h
-- at::native::(anonymous namespace)::add_kernel()函数，位于build/aten/src/ATen/UfuncCPUKernel_add.cpp
-
-
-
-在进入C++层面的第一步，是进行调用参数的解码。因为在Python层面和在C++层面类的体系是不一样的，Python语言中的Tensor类型，在C++层面统一当做PyObject来处理，因此在C++层面需要将PyObject类型的参数再还原成C++层面的Tensor等类型。另外Python语言中函数的参数是一个字典，传参时候的顺序可能有变化，这也需要在C++层面进行识别处理。
-PyTorch为此定义了PythonArgParser类，在函数被调用的入口处进行参数解析：
-
-
-如上面的代码，对于add方法，Pytorch支持两种不同的签名，但是前一种已经过时了，因此实际调用走的都是第二种，调用到Tensor::add()方法。在这段函数的开始部分，原来的Python层面的参数PyObject对象由PythonArgParser进行解析，基本过程是在根据签名字符串构造FunctionSignature对象，然后再调用其方法parse对传入的参数进行匹配。匹配中依赖于两个Python C API: PyTuple_GET_ITEM()和PyDict_GetItem()，在调用Tensor::add()之前，PythonArgParser会通过其tensor()和scalar()方法将PyObject转换成Tensor对象及Scalar对象。
-
-在Tensor::add()的实现中，并不是真正的算子代码，因为刚才只完成了从Python到C++的调用转换，实际的算子实现在不同平台或者不同的加速库下是不同的，还需要一种机制能够将Tensor::add()的调用转换到相应的实现上，在PyTorch中，这个转换是通过Dispatcher完成的。
 
 
 
@@ -1728,7 +1811,7 @@ PyTorch为此定义了PythonArgParser类，在函数被调用的入口处进行�
 - https://pytorch.org/tutorials/advanced/dispatcher.html
 - http://blog.ezyang.com/2020/09/lets-talk-about-the-pytorch-dispatcher/
 - https://blog.csdn.net/Chris_zhangrx/article/details/119512418
-- https://zhuanlan.zhihu.com/p/67834038
+- 【译】聊聊Pytorch Dispatcher https://zhuanlan.zhihu.com/p/67834038
 - https://blog.csdn.net/xixiaoyaoww/article/details/112211025
 - pytorch中的dispatcher https://zhuanlan.zhihu.com/p/390049109
 - [Pytorch 源码阅读] —— 谈谈 dispatcher（二）https://blog.csdn.net/Chris_zhangrx/article/details/119512418
@@ -1737,6 +1820,7 @@ PyTorch为此定义了PythonArgParser类，在函数被调用的入口处进行�
 - https://zhuanlan.zhihu.com/p/349560723
 - https://zhuanlan.zhihu.com/p/499979372
 - 这可能是关于Pytorch底层算子扩展最详细的总结了 https://wenku.baidu.com/view/1415b43ac181e53a580216fc700abb68a982ad3d.html
+
 
 
 
