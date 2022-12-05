@@ -1123,9 +1123,19 @@ at::Tensor kaiser_window(int64_t window_length, c10::optional<at::ScalarType> dt
 该张PPT总结了在PyTorch中dispatch一些op时，最常见的handler序列的一些情况。大多数时候，都是先是autograd，然后是backend（如果你是一个工厂函数，中间还有一个backend select）。对于XLA，还有一个XLA PreAutograd key（update：这个key现在被简化为AutogradXLA），用来覆盖Autograd key的行为。当然，如果你一下子打开PyTorch的每一个功能，最终可能会在很多handler上停下来。这些handler的处理顺序很重要，因为handler间不一定是符合交换律。
 <img src="../images/dispatcher_6.webp"/>
 
+
+
+
+
 ## 算子注册过程
 
-在PyTorch中，全局只有一个唯一的Dispatcher，所有的算子都注册到这个Dispatcher上，因为算子很多，为了方便，将算子注册的过程简化成了两个宏：TORCH_LIBRARY和TORCH_LIBRARY_IMPL。
+在PyTorch中，全局只有一个唯一的Dispatcher，所有的算子都注册到这个Dispatcher上.
+
+
+<img src="../images/dispatcher_register_kernel.png"/>
+
+
+因为算子很多，为了方便，将算子注册的过程简化成了两个宏：TORCH_LIBRARY和TORCH_LIBRARY_IMPL。
 
 #### TORCH_LIBRARY及Schema说明
 

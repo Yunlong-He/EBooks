@@ -3,9 +3,16 @@
 
 - [为什么需要代码生成][#为什么需要代码生成]
 - [依赖代码生成的文件](#依赖代码生成的文件)
-- [算子的声明](#算子的声明)
+- [算子声明](#算子声明)
+  - schema
+  - structured kernel
+  - ufunc
 - [ATen代码生成](#ATen代码生成)
-- [算子注册代码生成](#算子注册代码生成)
+  - ATen代码生成概述[#ATen代码生成概述]
+  - ATen代码生成过程[#ATen代码生成过程]
+- [PyTorch代码生成](#PyTorch代码生成)
+  - PyTorch代码生成概述[#PyTorch代码生成概述]
+  - PyTorch代码生成过程[PyTorch代码生成过程]
 
 
 
@@ -69,11 +76,54 @@
 后面我们会对其中关键的文件及生成过程进行介绍。
 
 
+
+## 算子声明
+
+和算子声明相关的文件有三个：
+- native_functions_path: native functions的定义
+- derivatives.yaml: 这里定义了算子及其相应微分算子的关系
+- deprecated.yaml: 定义了哪些是已经过时，不再建议使用的算子
+
+代码生成的核心是算子的声明，PyTorch中所有的算子都定义在native_functions.yaml中，以算子torch.add(a, b, out=c)为例，其声明如下：
+```yaml
+- func: add.out(Tensor self, Tensor other, *, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
+  device_check: NoCheck   # TensorIterator
+  structured: True
+  structured_inherits: TensorIteratorBase
+  dispatch:
+    CPU, CUDA: add_out
+    SparseCPU: add_out_sparse_cpu
+    SparseCUDA: add_out_sparse_cuda
+    SparseCsrCPU: add_out_sparse_csr_cpu
+    SparseCsrCUDA: add_out_sparse_csr_cuda
+    MkldnnCPU: mkldnn_add_out
+```
+
+
+每个算子都有自己的Schema（如"func"所定义的），Schema有三种类型：
+- functional。输出结果是一个新创建的对象
+- inplace。操作直接在self上进行，不会创建新的对象。
+- out。调用者提供名为out的输出参数，输出结果保存在该参数内。
+
+在PyTorch中有一些算子和另一个算子功能完全相同，只是名称不同，例如arctanh和atanh，absolute和abs，对于这种情况，可以用alias来指明。
+
+
+### Structured Kernel
+Structured Kernel 是一类特殊的函数，这类函数一定有基础形式和出参(out)两种形式，也可能会支持inplace变体
+
+### 算子实现
+
+ATen算子的核心代码也是在aten/src/ATen下，
+
+
+
 ## ATen代码生成
 
+### ATen代码生成概述
 ATen的native函数是PyTorch目前主推的operator机制，作为对比，老旧的TH/THC函数（使用cwrap定义）将逐渐被ATen的native替代。ATen的native函数声明在native_functions.yaml文件中，然后实现在ATen/native目录下。移植AdaptiveMaxPooling2d op需要修改这个yaml文件。
 
-### 工具代码
+### 生成器代码
+
 这部分生成的工具位于torchgen下
 ```Bash
 ├── api
@@ -178,7 +228,6 @@ ATen的native函数是PyTorch目前主推的operator机制，作为对比，老�
 - source-path: 缺省为aten/src/ATen，代表ATen源代码的路径
 - install_dir: 缺省为build/aten/src/ATen，代表输出的路径
 
-### 代码生成的入口
 在编译PyTorch时，代码生成的入口在cmake/Codegen.cmake中。根据其中注释可以了解到，因为PyTorch在不断发展中，代码生成的文件发生变化是
 很正常的，但是cmake命令所依赖的输入是固定的，所以这里用了一个小trick，将生成的文件列表写入到一些cmake文件中，之后的编译过程依赖这些
 cmake文件，这样当代码重新生成之后，这些cmake文件也被更新了，只有对此有依赖的编译过程也会被重新执行。
@@ -282,40 +331,6 @@ aten_interned_strings.h  ATenOpList.cpp  TensorBody.h  TensorMethods.cpp
 
 ### 生成代码与自定义代码的关系
 <img src="../images/torchgen.png"/>
-
-
-#### 算子声明
-
-代码生成的核心是算子的声明，PyTorch中所有的算子都定义在native_functions.yaml中，以算子torch.add(a, b, out=c)为例，其声明如下：
-```yaml
-- func: add.out(Tensor self, Tensor other, *, Scalar alpha=1, Tensor(a!) out) -> Tensor(a!)
-  device_check: NoCheck   # TensorIterator
-  structured: True
-  structured_inherits: TensorIteratorBase
-  dispatch:
-    CPU, CUDA: add_out
-    SparseCPU: add_out_sparse_cpu
-    SparseCUDA: add_out_sparse_cuda
-    SparseCsrCPU: add_out_sparse_csr_cpu
-    SparseCsrCUDA: add_out_sparse_csr_cuda
-    MkldnnCPU: mkldnn_add_out
-```
-
-
-每个算子都有自己的Schema（如"func"所定义的），Schema有三种类型：
-- functional。输出结果是一个新创建的对象
-- inplace。操作直接在self上进行，不会创建新的对象。
-- out。调用者提供名为out的输出参数，输出结果保存在该参数内。
-
-在PyTorch中有一些算子和另一个算子功能完全相同，只是名称不同，例如arctanh和atanh，absolute和abs，对于这种情况，可以用alias来指明。
-
-
-### Structured Kernel
-Structured Kernel 是一类特殊的函数，这类函数一定有基础形式和出参(out)两种形式，也可能会支持inplace变体
-
-### 算子实现
-
-ATen算子的核心代码也是在aten/src/ATen下，
 
 
 ### 生成过程
@@ -665,7 +680,9 @@ return wrapper_Scalar_add_Scalar(self, other, alpha);
 #     of these respective files for more information
 ```
 
-### 相关代码
+## PyTorch代码生成
+
+### PyTorch代码生成概述
 代码生成相关的工具在tools目录下：
 ```Bash
 ├── autograd
@@ -722,39 +739,350 @@ torch/csrc/autograd/generated/      # 自动微分相关的代码
 torch/csrc/jit/generated/           # JIT相关的代码
 build/aten/src/ATen                 # aten算子相关的代码
 ```
-- setup_helpers/generate_code.py: 这个文件中函数generate_code()是代码生成的入口。等下我们会沿着这个入口梳理代码生成的逻辑。
+- setup_helpers/generate_code.py: 这个文件中函数generate_code()是PyTorch代码生成的入口。等下我们会沿着这个入口梳理代码生成的逻辑。
 - 
 
-### 代码生成的流程
+### PyTorch代码生成过程
 
-generate_code.py主要做三件事情：
-- 生成pybindings，也就是算子的Python接口
-- 生成libtorch
-- 生成annotated
+generate_code.py主要做以下三件事情：
+- 生成pybindings，也就是算子的Python接口，也就是gen_autograd_python()过程。
+- 生成libtorch，这部分是生成器的核心逻辑，最终会编译近libtorch里，也就是gen_autograd()过程
+- 生成annotated的相关代码
 
 <img src="../images/code_generation.png" />
 
 #### 生成pybindings
-代码生成沿着以下的流程进行：
-<ol>
-<li> 调用tools/autograd/gen_autograd.py中的函数gen_autograd_python，这个函数输入参数
-NATIVE_FUNCTIONS_PATH = "aten/src/ATen/native/native_functions.yaml"
-TAGS_PATH = "aten/src/ATen/native/tags.yaml"
-    <ol>
-    <li> native_functions_path: native functions的定义
-    <li> derivatives.yaml: 这里定义了算子及其相应微分算子的关系
-    <li> templates: 
-    <li> deprecated.yaml: 定义了哪些是已经过时，不再建议使用的算子
-    </ol>
-    之后会调用函数gen_python_functions.gen()执行代码生成的操作。这个函数用于生成ATen算子的Python接口，包括torch._C下nn、_fft、_linalg、_sparse以及_special下对象的方法。这个函数的工作流程如下：
-    <ol>
-    <li>解析native_functions.yaml和tags.yaml的内容，生成native函数列表
-    <li>根据函数定义生成函数的签名
-    <li>读取deprecated.yaml，得到过时的函数及相应签名
-    <li>调用FileManager.write_with_template()生成对应函数的代码，生成的过程中要用到模板文件 python_variable_methods.cpp。
 
 
-native_functions.yaml文件中，
+在生成的python_functions_X.cpp中，定义了算子的反向传播函数，
+```C++
+// torch/csrc/autograd/generated/python_functions_2.cpp
+
+namespace torch { namespace autograd { namespace generated {
+
+PyObject* THPAddBackward0_alpha_getter(THPCppFunction *self, void *_unused) {
+  // ...
+}
+
+static struct PyGetSetDef AddBackward0_properties[] = {
+  THP_FUNCTION_DEFAULT_PROPERTIES,
+  {(char*)"_saved_alpha", (getter)THPAddBackward0_alpha_getter, nullptr, nullptr, nullptr},
+  {nullptr} /* sentinel */
+};
+
+void initialize_autogenerated_functions_2() {
+  static PyTypeObject AddBackward0Class;
+  addClass<AddBackward0>(AddBackward0Class, "AddBackward0", AddBackward0_properties);
+  
+  // ...
+}
+
+}}} // namespace torch::autograd::generated
+```
+
+```C++
+// torch/csrc/autograd/generated/VariableTypes_2.cpp
+
+namespace torch { namespace autograd {
+
+namespace {
+
+at::Tensor add_Tensor(c10::DispatchKeySet ks, const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  auto& self_ = unpack(self, "self", 0);
+  auto& other_ = unpack(other, "other", 1);
+  auto _any_requires_grad = compute_requires_grad( self, other );
+  
+  (void)_any_requires_grad;
+  auto _any_has_forward_grad_result = isFwGradDefined(self) || isFwGradDefined(other);
+  (void)_any_has_forward_grad_result;
+  std::shared_ptr<AddBackward0> grad_fn;
+  if (_any_requires_grad) {
+    grad_fn = std::shared_ptr<AddBackward0>(new AddBackward0(), deleteNode);
+    grad_fn->set_next_edges(collect_next_edges( self, other ));
+    grad_fn->other_scalar_type = other.scalar_type();
+    grad_fn->alpha = alpha;
+    grad_fn->self_scalar_type = self.scalar_type();
+  }
+  #ifndef NDEBUG
+  c10::optional<Storage> self__storage_saved =
+    self_.has_storage() ? c10::optional<Storage>(self_.storage()) : c10::nullopt;
+  c10::intrusive_ptr<TensorImpl> self__impl_saved;
+  if (self_.defined()) self__impl_saved = self_.getIntrusivePtr();
+  c10::optional<Storage> other__storage_saved =
+    other_.has_storage() ? c10::optional<Storage>(other_.storage()) : c10::nullopt;
+  c10::intrusive_ptr<TensorImpl> other__impl_saved;
+  if (other_.defined()) other__impl_saved = other_.getIntrusivePtr();
+  #endif
+  auto _tmp = ([&]() {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    return at::redispatch::add(ks & c10::after_autograd_keyset, self_, other_, alpha);
+  })();
+  auto result = std::move(_tmp);
+  #ifndef NDEBUG
+  if (self__storage_saved.has_value())
+    AT_ASSERT(self__storage_saved.value().is_alias_of(self_.storage()));
+  if (self__impl_saved) AT_ASSERT(self__impl_saved == self_.getIntrusivePtr());
+  if (other__storage_saved.has_value())
+    AT_ASSERT(other__storage_saved.value().is_alias_of(other_.storage()));
+  if (other__impl_saved) AT_ASSERT(other__impl_saved == other_.getIntrusivePtr());
+  if (result.has_storage()) AT_ASSERT(result.storage().use_count() == 1, "function: add_Tensor");
+  AT_ASSERT(result.use_count() <= 1, "function: add_Tensor");
+  #endif
+  if (grad_fn) {
+      set_history(flatten_tensor_args( result ), grad_fn);
+  }
+  c10::optional<at::Tensor> result_new_fw_grad_opt = c10::nullopt;
+  if (_any_has_forward_grad_result && (result.defined())) {
+      auto self_t_raw = toNonOptFwGrad(self);
+      auto self_tensor = toNonOptTensor(self);
+      auto self_t = (self_t_raw.defined() || !self_tensor.defined())
+        ? self_t_raw : at::_efficientzerotensor(self_tensor.sizes(), self_tensor.options());
+      auto other_t_raw = toNonOptFwGrad(other);
+      auto other_tensor = toNonOptTensor(other);
+      auto other_t = (other_t_raw.defined() || !other_tensor.defined())
+        ? other_t_raw : at::_efficientzerotensor(other_tensor.sizes(), other_tensor.options());
+      result_new_fw_grad_opt = self_t + maybe_multiply(other_t, alpha);
+  }
+  if (result_new_fw_grad_opt.has_value() && result_new_fw_grad_opt.value().defined() && result.defined()) {
+    // The hardcoded 0 here will need to be updated once we support multiple levels.
+    result._set_fw_grad(result_new_fw_grad_opt.value(), /* level */ 0, /* is_inplace_op */ false);
+  }
+  return result;
+}
+
+}  // anonymous namespace
+
+namespace {
+
+TORCH_LIBRARY_IMPL(aten, Autograd, m) {
+  m.impl("add.Tensor",
+         TORCH_FN(VariableType::add_Tensor)
+  );
+}
+} // anonymous namespace
+}} // namespace torch::autograd
+```
+
+
+```C++
+// torch/csrc/autograd/generated/ADInplaceOrViewType_0.cpp
+
+namespace torch {
+
+namespace ADInplaceOrView {
+
+namespace {
+
+at::Tensor & add__Tensor(c10::DispatchKeySet ks, at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    at::_ops::add__Tensor::redispatch(ks & c10::after_ADInplaceOrView_keyset, self, other, alpha);
+  }
+  increment_version(self);
+  return self;
+}
+
+at::Tensor & add_out_out(c10::DispatchKeySet ks, const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, at::Tensor & out) {
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    at::_ops::add_out::redispatch(ks & c10::after_ADInplaceOrView_keyset, self, other, alpha, out);
+  }
+  increment_version(out);
+  return out;
+}
+
+}  // namespace
+}  // namespace ADInplaceOrView
+
+namespace {
+
+TORCH_LIBRARY_IMPL(aten, ADInplaceOrView, m) {
+  m.impl("add_.Tensor",
+         TORCH_FN(ADInplaceOrView::add__Tensor)
+  );
+  m.impl("add.out",
+         TORCH_FN(ADInplaceOrView::add_out_out)
+  );
+}
+
+}  // namespace
+} // namespace torch
+
+```
+
+
+```C++
+// torch/csrc/autograd/generated/ADInplaceOrViewType_0.cpp
+
+namespace torch {
+
+namespace TraceType {
+
+namespace {
+
+at::Tensor add_Tensor(c10::DispatchKeySet ks, const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  torch::jit::Node* node = nullptr;
+  std::shared_ptr<jit::tracer::TracingState> tracer_state;
+  if (jit::tracer::isTracing()) {
+    tracer_state = jit::tracer::getTracingState();
+    at::Symbol op_name;
+    op_name = c10::Symbol::fromQualString("aten::add");
+    node = tracer_state->createNode(op_name, /*num_outputs=*/0);
+    jit::tracer::recordSourceLocation(node);
+    jit::tracer::addInputs(node, "self", self);
+    jit::tracer::addInputs(node, "other", other);
+    jit::tracer::addInputs(node, "alpha", alpha);
+    tracer_state->insertNode(node);
+  
+    jit::tracer::setTracingState(nullptr);
+  }
+  auto result =at::_ops::add_Tensor::redispatch(ks & c10::DispatchKeySet(c10::DispatchKeySet::FULL_AFTER, c10::DispatchKey::Tracer), self, other, alpha);
+  if (tracer_state) {
+    jit::tracer::setTracingState(std::move(tracer_state));
+    jit::tracer::addOutput(node, result);
+  }
+  return result;
+}
+at::Tensor & add__Tensor(c10::DispatchKeySet ks, at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha) {
+  torch::jit::Node* node = nullptr;
+  std::shared_ptr<jit::tracer::TracingState> tracer_state;
+  if (jit::tracer::isTracing()) {
+    tracer_state = jit::tracer::getTracingState();
+    at::Symbol op_name;
+    
+    if (tracer_state->force_outplace) {
+      op_name = c10::Symbol::fromQualString("aten::add");
+    } else {
+      op_name = c10::Symbol::fromQualString("aten::add_");
+    }
+    node = tracer_state->createNode(op_name, /*num_outputs=*/0);
+    jit::tracer::recordSourceLocation(node);
+    jit::tracer::addInputs(node, "self", self);
+    jit::tracer::addInputs(node, "other", other);
+    jit::tracer::addInputs(node, "alpha", alpha);
+    tracer_state->insertNode(node);
+    jit::tracer::ensureUniqueIfOutOfPlaced("add_", self);
+    jit::tracer::setTracingState(nullptr);
+  }
+  at::_ops::add__Tensor::redispatch(ks & c10::DispatchKeySet(c10::DispatchKeySet::FULL_AFTER, c10::DispatchKey::Tracer), self, other, alpha);
+  if (tracer_state) {
+    jit::tracer::setTracingState(std::move(tracer_state));
+    jit::tracer::addOutput(node, self);
+  }
+  return self;
+}
+at::Tensor & add_out_out(c10::DispatchKeySet ks, const at::Tensor & self, const at::Tensor & other, const at::Scalar & alpha, at::Tensor & out) {
+  torch::jit::Node* node = nullptr;
+  std::shared_ptr<jit::tracer::TracingState> tracer_state;
+  if (jit::tracer::isTracing()) {
+    tracer_state = jit::tracer::getTracingState();
+    at::Symbol op_name;
+    op_name = c10::Symbol::fromQualString("aten::add");
+    node = tracer_state->createNode(op_name, /*num_outputs=*/0);
+    jit::tracer::recordSourceLocation(node);
+    jit::tracer::addInputs(node, "self", self);
+    jit::tracer::addInputs(node, "other", other);
+    jit::tracer::addInputs(node, "alpha", alpha);
+    
+    if (tracer_state->force_outplace) {
+    
+    } else {
+      jit::tracer::addInputs(node, "out", out);
+    }
+    tracer_state->insertNode(node);
+    jit::tracer::ensureUniqueIfOutOfPlaced("add_out", out);
+    jit::tracer::setTracingState(nullptr);
+  }
+  at::_ops::add_out::redispatch(ks & c10::DispatchKeySet(c10::DispatchKeySet::FULL_AFTER, c10::DispatchKey::Tracer), self, other, alpha, out);
+  if (tracer_state) {
+    jit::tracer::setTracingState(std::move(tracer_state));
+    jit::tracer::addOutput(node, out);
+  }
+  return out;
+}  
+
+}  // namespace
+}  // namespace TraceType
+
+namespace {
+
+TORCH_LIBRARY_IMPL(aten, Tracer, m) {
+  m.impl("add.Tensor",
+         TORCH_FN(TraceType::add_Tensor)
+  );
+  m.impl("add_.Tensor",
+         TORCH_FN(TraceType::add__Tensor)
+  );
+  m.impl("add.out",
+         TORCH_FN(TraceType::add_out_out)
+  );
+}
+
+}  // namespace
+
+} // namespace torch
+
+```
+
+
+```C++
+// torch/csrc/autograd/generated/Functions.h
+
+namespace torch { namespace autograd { namespace generated {
+
+struct TORCH_API AddBackward0 : public TraceableFunction {
+  using TraceableFunction::TraceableFunction;
+  variable_list apply(variable_list&& grads) override;
+  std::string name() const override { return "AddBackward0"; }
+  void release_variables() override {
+
+
+  }
+
+  at::ScalarType other_scalar_type;
+  at::Scalar alpha;
+  at::ScalarType self_scalar_type;
+
+};
+}}} // namespace torch::autograd::generated
+
+```
+
+
+```C++
+// torch/csrc/autograd/generated/Functions.cpp
+
+namespace torch { namespace autograd { namespace generated {
+
+variable_list AddBackward0::apply(variable_list&& grads) {
+
+
+  IndexRangeGenerator gen;
+  auto self_ix = gen.range(1);
+  auto other_ix = gen.range(1);
+  variable_list grad_inputs(gen.size());
+  const auto& grad = grads[0];
+  bool any_grad_defined = any_variable_defined(grads);
+  if (should_compute_output({ other_ix })) {
+    auto grad_result = any_grad_defined ? (handle_r_to_c(other_scalar_type, maybe_multiply(grad, alpha.conj()))) : Tensor();
+    copy_range(grad_inputs, other_ix, grad_result);
+  }
+  if (should_compute_output({ self_ix })) {
+    auto grad_result = any_grad_defined ? (handle_r_to_c(self_scalar_type, grad)) : Tensor();
+    copy_range(grad_inputs, self_ix, grad_result);
+  }
+  return grad_inputs;
+}
+
+}}} // namespace torch::autograd::generated
+```
+
+```C++
+// torch/csrc/autograd/generated/Functions.cpp
+
+```
+
+
 
 
 在模板文件python_variable_methods中，包含了很多手写的代码，包括头文件定义和函数定义，中间留了一些位置，用于放置生成的代码。比如如下的片段：
@@ -815,6 +1143,8 @@ static PyObject * ${pycname}(PyObject* self_, PyObject* args, PyObject* kwargs)
 )
 ```
 
+
+
 其中每个变量都是根据原始的native_functions.yaml中的函数定义生成的，例如对于
 ```Python
 def get_pycname(name: BaseOperatorName) -> str:
@@ -864,8 +1194,8 @@ static PyObject * THPVariable_add(PyObject* self_, PyObject* args, PyObject* kwa
 }
 ```
 
-#### 生成libtorch
-#### 生成annotated
+### 生成libtorch
+### 生成annotated
 
 
 
