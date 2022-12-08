@@ -5,6 +5,9 @@
 - [性能优化介绍][#性能优化介绍]
 - [硬件加速技术-CPU][#硬件加速技术-CPU]
     - [Intel® Advanced Matrix Extensions][#Intel® Advanced Matrix Extensions]
+- [模型保存及加载][#模型保存及加载]
+    - [PyTorch模型存储的格式][#PyTorch模型存储的格式]
+    - [PyTorch模型与ONNX模型的转换][#PyTorch模型与ONNX模型的转换]
 - 使用TensorRT
 - 算子融合
 - 量化
@@ -13,7 +16,11 @@
 
 ## 性能优化介绍
 
-深度神经网络的计算中，数据类型缺省是32位浮点类型，
+深度神经网络的计算有以下几个特点：
+- 计算量大，尤其是在当今大模型成为流行趋势的年代
+- 并行度高，网络中的计算包含大量的向量和矩阵的计算，如
+- 缺省数据类型是32位浮点类型，并且对精度有一定的容忍性，因此在一定的情况下，可以使用bfloat16或者int8进行计算
+- 网络结构有一定的裁剪容忍度，剪掉部分连接对整体预测精度的影响不大
 
 ## 硬件加速技术-CPU
 
@@ -30,6 +37,12 @@ flags           : fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov 
 - SSE
 - AVX
 - AMX
+
+<table>
+<tr>
+<td>h1</td><td>h2</td>
+</tr>
+</table>
 
 |指令集| 	条| 	Date| 	ICPU| 	IDate| 	ACPU| 	ADate| 	Memo|
 |-------|----|----------|-------|--------|-------|-------|-------|
@@ -66,6 +79,7 @@ ACPU：AMD最早支持该指令集的CPU。
 ADate：ACPU的发售日期。
 Memo：备注。
 
+参考https://www.cnblogs.com/zyl910/archive/2012/02/26/x86_simd_table.html
 
 
 基于CPU的加速库：
@@ -74,6 +88,12 @@ Memo：备注。
 - ONEDNN
 
 ### Intel® Advanced Matrix Extensions
+
+## 模型保存及加载
+
+### PyTorch模型存储的格式
+
+### PyTorch模型与ONNX模型的转换
 
 ## BFloat16
 
