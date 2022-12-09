@@ -90,10 +90,58 @@ Memo：备注。
 ### Intel® Advanced Matrix Extensions
 
 ## 模型保存及加载
+参考：
+- pytorch中保存的模型文件.pth深入解析 https://zhuanlan.zhihu.com/p/84797438
 
 ### PyTorch模型存储的格式
+在pytorch进行模型保存的时候，一般有两种保存方式，一种是保存整个模型，另一种是只保存模型的参数。
+```Python
+torch.save(model.state_dict(), "my_model.pth") # 只保存模型的参数
+torch.save(model, "my_model.pth") # 保存整个模型
+```
+如果保存的是完整的模型，实际保存的是一个字典，包括以下四个键对：
+- model，模型的参数
+- optimizer,scheduler,iteration
+如果保存的只是模型的参数，那么
+
+保存的模型参数实际上一个字典类型，通过key-value的形式来存储模型的所有参数.
+如果要查看模型文件的内容，可以先加载进来再查看：
+```Python
+import torch
+
+pthfile = '~/.cache/torch/hub/checkpoints/resnet50-0676ba61.pth'
+net = torch.load(pthfile,map_location=torch.device('cpu')) 
+for key,value in net.items():
+    print(key,value.size(),sep=" ")
+''' outputs:
+conv1.weight torch.Size([64, 3, 7, 7])
+bn1.running_mean torch.Size([64])
+bn1.running_var torch.Size([64])
+bn1.weight torch.Size([64])
+bn1.bias torch.Size([64])
+layer1.0.conv1.weight torch.Size([64, 64, 1, 1])
+layer1.0.bn1.running_mean torch.Size([64])
+'''
+```
+
+有时候，比如训练意外中断了，或者我们希望在某个checkpoint之上继续训练，可以从checkpoint中加载模型参数、学习率等：
+```Python
+    ckpt_path = "./checkpoint/ckpt_best_1001.pth"
+    ckpt = torch.load(ckpt_path)
+
+    model.load_state_dict(ckpt['net'])  # 加载模型参数
+
+    optimizer.load_state_dict(ckpt['optimizer'])  # 加载优化器参数
+    start_epoch = ckpt['epoch']  # 设置开始的epoch
+```
+
+
 
 ### PyTorch模型与ONNX模型的转换
+
+## 使用TensorRT
+
+
 
 ## BFloat16
 
