@@ -37,10 +37,23 @@
 ## PyTorch中的分布式训练
 
 ### torch.multiprocessing
+
+对于分布式训练来说，不可避免的要在多个进程（本地或远程）之间传递数据，对PyTorch来说，传递的主要是Tensor。因此事先分布式训练的基础之一就是对Tensor的序列化。
+
+torch.multiprocessing模块是对Python的multiprocessing模块的简单封装，并且定义了新的reducer，基于共享内存提供了不同进程对同一份数据的访问。如果某个Tensor被移动到了共享内存，其他的进程就可以直接访问而不需要任何的拷贝操作。
+
+从设计上讲，torch.multiprocessing完全兼容python的multiprocessing模块。
+
+Python本身的multiprocessing库时支持对象的序列化的，但并不是所有对象都可以，Tensor有自己的特殊的storage_成员变量，因此PyTorch需要针对Tensor实现自定义的reduce处理。
+
+
+
+
 ### torch.distributedDataParallel（DP）
 ### DistributedDataParallel（DDP）
 ### torch.distributed.rpc
 
 ## 参考
 - https://zhuanlan.zhihu.com/p/136372142
+- 周末漫谈——Pytorch MultiProcessing的Custom Reduction https://zhuanlan.zhihu.com/p/397498221
 
