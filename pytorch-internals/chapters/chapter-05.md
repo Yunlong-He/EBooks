@@ -93,6 +93,8 @@ class TORCH_API TensorBase {
 > 构造 intrusive_ptr 的同时对 refcount_ 和 weakcount_ 都加 1，
 > 如果是默认构造，则两个引用计数都默认为 0，根据这个可以将通过 make_intrusive 构造的指针与堆栈上的会被自动析构的情况分开, 用来确保内存是我们自己分配的。
 
+### TensorImpl
+
 以后有机会我们再研究一下intrusive_ptr的实现，在此之前，我们主要关注impl_这个成员变量，也就是TensorImpl这个类的实现。
 
 ```C++
@@ -118,7 +120,7 @@ TensorImpl(
   int64_t dim() const {
     //...
   }
-  bool is_contiguous(
+  bool is_contiguous() {
     //...
   } 
 
@@ -175,6 +177,8 @@ private:
 - data_type_。Tensor内的数据类型。
 - device_opt_。存放Tensor的设备。
 - 
+
+### Storage
 
 下面我们看一下Tensor的存储，因为Tensor的存储方式和算子的计算息息相关，对性能的影响也非常的关键。
 ```C++
@@ -257,6 +261,8 @@ class UniqueVoidPtr {
 }
 ```
 
+### THPVariable
+
 现在我们知道，在C++的层面，张量被Tensor类型所表示，但是我们平时是使用Python语言来训练推理模型的，使用的自然是Python中的Tensor类型，那么在PyTorch中是如何实现从Python语言中的Tensor对象到C++中的Tensor对象的转换呢？
 
 详细的过程我们留到后面的章节解释，不过机制并不复杂，PyTorch使用了THPVariable这个类型作为过渡，Python中的Tensor类
@@ -326,6 +332,57 @@ struct THPVariable {
 };
 ```
 
+刚才我们已经看到，Python层面的Tensor通过Cython的PyObject映射到C++层面的Tensor类上，但是Python层面除了Tensor类之外，还有相关的其他类型，如FloatTensor的storage()返回的是FloatStorage对象，这些类型也通过类似的方式映射到C++层面的对象。对于storage()方法，下面的代码展示了其最终调用C++层面的Tensor::storage()方法的过程。
+
+```C++
+
+// torch/csrc/autograd/generated/python_variable_methods.cpp
+PyMethodDef variable_methods[] = {
+  // ......
+  {"_storage", THPVariable_storage, METH_NOARGS, NULL},
+  {nullptr}
+};
+
+static PyObject * THPVariable_storage(PyObject* self, PyObject* arg)
+{
+  HANDLE_TH_ERRORS
+  if (check_has_torch_function(self)) {
+    return handle_torch_function(self, "storage");
+  }
+  auto& self_ = THPVariable_Unpack(self);
+  return createPyObject(self_.storage());
+  END_HANDLE_TH_ERRORS
+}
+
+// torch/csrc/DynamicTypes.cpp
+PyObject* createPyObject(const at::Storage& storage) {
+  // TODO: https://github.com/pytorch/pytorch/issues/47442
+  if (storage.device_type() == at::DeviceType::Meta) {
+    TORCH_CHECK_NOT_IMPLEMENTED(false, "python bindings for meta storage objects not supported");
+  }
+  if (storage.data() == nullptr && storage.nbytes() != 0) {
+    TORCH_CHECK_NOT_IMPLEMENTED(false, "python bindings to nullptr storage (e.g., from torch.Tensor._make_wrapper_subclass) are currently unsafe and thus disabled.  See https://github.com/pytorch/pytorch/issues/61669 for more details");
+  }
+  PyTypeObject* type = reinterpret_cast<PyTypeObject*>(THPStorageClass);
+  auto obj = THPObjectPtr(type->tp_alloc(type, 0));
+  if (!obj) throw python_error();
+  ((THPVoidStorage*)obj.get())->cdata = at::Storage(/* copy */ storage).unsafeReleaseStorageImpl();
+  return obj.release();
+}
+
+// torch/_tensor.py
+class Tensor(torch._C._TensorBase):
+    def storage(self):
+        r"""
+        storage() -> torch.Storage
+
+        Returns the underlying storage.
+        """
+        if has_torch_function_unary(self):
+            return handle_torch_function(Tensor.storage, (self,), self)
+
+        return torch._TypedStorage(wrap_storage=self._storage(), dtype=self.dtype)
+```
 
 
 ### TensorOption
