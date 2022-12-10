@@ -19,6 +19,14 @@
 </ol>
 
 ## PyTorch的核心数据结构
+
+Tensor（张量）是深度学习计算框架所要处理的最基础的数据，在PyTorch中，Tensor也是最核心的数据结构，绝大多数的计算都是围绕着Tensor进行的，出于计算效率的考虑，主要算子都是在C++层面实现的，为此Tensor的实际表示也是在C++层面定义的。但是为了易用性，PyTorch在Python层面重新定义了Tensor类，并在调用C++实现的时候，将其转换为C++层面的Tensor。
+
+相关Python层面和C++层面的Tensor类关系如下图：
+
+<img src="../images/tensor_class.png"/>
+
+
 ### Tensor
 
 在Pytorch的早期版本中，Tensor被定义在TH模块中的THTensor类中，后来TH模块被移除了，也就有了更直观的Tensor类。
