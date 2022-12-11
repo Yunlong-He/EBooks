@@ -167,6 +167,21 @@ output = model(input)
 
 的时候（也就是在进行forward的时候），模型被复制到了其余的GPU上，这里是第2个GPU。程序输出如下（可见大小为32的batch被拆分成了大小为16的batch）
 
+我们来总结下DataParallel一次迭代的过程:
+
+    DataLoader把数据通过多个worker读到主进程的内存中；通过tensor的split语义，将一个batch的数据切分成多个更小的batch，然后分别送往不同的CUDA设备；在不同的cuda设备上完成前向计算，网络的输出被gather到主CUDA设备上（初始化时使用的设备），loss而后在这里被计算出来；loss然后被scatter到每个CUDA设备上，每个CUDA设备通过BP计算得到梯度；然后每个CUDA设备上的梯度被reduce到主CUDA设备上，然后模型权重在主CUDA设备上获得更新；在下一次迭代之前，主CUDA设备将模型参数broadcast到其它CUDA设备上，完成权重参数值的同步。
+
+上述步骤提到的gather、reduce、scatter、broadcast都是来自MPI为代表的并行计算世界的概念，其中broadcast是主进程将相同的数据分发给组里的每一个其它进程；scatter是主进程将数据的每一小部分给组里的其它进程；gather是将其它进程的数据收集过来；reduce是将其它进程的数据收集过来并应用某种操作（比如SUM），在gather和reduce概念前面还可以加上all，如all_gather，all_reduce，那就是多对多的关系了，如下图所示（注意reduce的操作不一定是SUM，PyTorch目前实现了SUM、PRODUCT、MAX、MIN这四种）：
+
+<img src="../images/distributed_dp_1.webp"/>
+
+DataParallel通过复制一个网络到多个cuda设备，然后再split一个batch的data到多个cuda设备，通过这种并行计算的方式解决了batch很大的问题，但也有自身的不足：
+
+    它无法跨越机器，DataParallel是单进程多线程的，无法在多个机器上工作；它基于多线程的方式，确实方便了信息的交换，但受困于GIL；数据集先拷贝到主进程，然后再split到每个CUDA设备上；权重参数只在主CUDA上更新，需要每次迭代前向所有的CUDA设备做一次同步；每次迭代的网络输出需要gather到主的CUDA设备上；如果模型太大需要使用model parallel的时候，DataParallel目前还不支持；
+
+这个时候，DistributedDataParallel来了，并且自此之后，不管是单机还是多机，我们都推荐使用DDP来代替DP（DataParallel）。
+
+
 ### DistributedDataParallel（DDP）
 ### torch.distributed.rpc
 
