@@ -135,7 +135,37 @@ def reduce_storage(storage):
 
 ### DataParallel（DP）
 
+```Python
+#数据集的长度为100，batch size为32，fc层的输入是5，输出是2
+input_size = 5
+output_size = 2
 
+batch_size = 32
+data_size = 100
+
+model = Model(input_size, output_size)
+if torch.cuda.device_count() > 1:
+    print("Gemfield have ", torch.cuda.device_count(), "GPUs!")
+    model = nn.DataParallel(model)
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+model.to(device)
+rand_loader = DataLoader(dataset=RandomDataset(input_size, data_size),batch_size=batch_size, shuffle=True)
+
+for data in rand_loader:
+    input = data.to(device)
+    output = model(input)
+    print("Outside: input size", input.size(),"output_size", output.size())
+```
+本来batch_size是32，但是由于使用了DataParallel，而Gemfield有2个GPU，因此一个batch被划分成了2份，也就是tensor.split(16)，分别送往两个GPU上。值得注意的是：在第一次调用
+
+model.to(device)
+
+的时候，模型被加载到了第一个GPU设备上，而在第一次调用
+
+output = model(input)
+
+的时候（也就是在进行forward的时候），模型被复制到了其余的GPU上，这里是第2个GPU。程序输出如下（可见大小为32的batch被拆分成了大小为16的batch）
 
 ### DistributedDataParallel（DDP）
 ### torch.distributed.rpc
