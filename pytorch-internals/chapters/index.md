@@ -40,12 +40,19 @@
     - torch.utils.model_zoo
     - 算子的注册过程
     - 算子的调用过程
-- 2 - 第5章 PyTorch的运行时架构
-    - 一个简单的深度学习模型训练过程
+- 3 - 第5章 PyTorch的运行时架构
     - PyTorch的核心数据结构
-    - PyTorch的启动过程
-        - PyTorch的C++扩展模块初始化
-        - Torch 函数库的初始化
+        - Tensor
+        - TensorImpl
+        - Storage
+        - THPVariable
+        - Tensor的创建
+    - [PyTorch的核心模块
+    - [PyTorch的C++扩展模块初始化
+    - [Torch函数库的初始化
+    - [算子注册过程
+    - [算子调用的过程
+    - [Torch函数库的初始化
 - 4 - 第6章 Codegen - 代码生成器
     - 算子代码生成
     - Python API代码生成

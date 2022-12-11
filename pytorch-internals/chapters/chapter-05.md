@@ -3,11 +3,20 @@
 ## 主要内容
 
 - [PyTorch的核心数据结构][#PyTorch的核心数据结构]
+  - [Tensor][#Tensor]
+  - [TensorImpl][#TensorImpl]
+  - [Storage][#Storage]
+  - [THPVariable][#THPVariable]
+  - [Tensor的创建][#Tensor的创建]
+  - [][#]
 - [PyTorch的核心模块](#PyTorch的核心模块)
+  - [][#]
 - [PyTorch的C++扩展模块初始化](#PyTorch的C++扩展模块初始化)
 - [Torch函数库的初始化](#Torch函数库的初始化)
 - [算子注册过程](#算子注册过程)
+  - [][#]
 - [算子调用的过程](#算子调用的过程)
+  - [][#]
 - [Torch函数库的初始化](#Torch函数库的初始化)
 
 
@@ -59,7 +68,36 @@ class TORCH_API Tensor: public TensorBase {
 }
 ```
 
-我们还可以看到，Tensor类本身的实现很少，大部分功能来自于其父类TensorBase。根据文档注释我们可以了解到，这样做的初衷是为了避免修改算子签名的时候造成太多模块的重新编译，因为Tensor是一个核心数据结构，几乎所有的模块都会依赖于Tensor。
+还有另外一个类是TensorOptions，这个类包含了Tensor的一些属性，用于支持Tensor的构建。
+
+```C++
+// c10/core/TensorOptions.h
+struct C10_API TensorOptions {
+  //......
+
+  Device device_ = at::kCPU; // 16-bit
+  caffe2::TypeMeta dtype_ = caffe2::TypeMeta::Make<float>(); // 16-bit
+  Layout layout_ = at::kStrided; // 8-bit
+  MemoryFormat memory_format_ = MemoryFormat::Contiguous; // 8-bit
+
+  // Bitmask required here to get this to fit inside 32 bits (or even 64 bits,
+  // for that matter)
+
+  bool requires_grad_ : 1;
+  bool pinned_memory_ : 1;
+
+  bool has_device_ : 1;
+  bool has_dtype_ : 1;
+  bool has_layout_ : 1;
+  bool has_requires_grad_ : 1;
+  bool has_pinned_memory_ : 1;
+  bool has_memory_format_ : 1;
+};
+
+```
+
+
+我们还可以看到，Tensor类本身的实现很少，大部分功能来自于其父类TensorBase。根据文档注释我们可以了解到，这样做的初衷是为了避免修改算子签名的时候造成太多模块的重新编译，因为Tensor是一个核心数据结构，几乎所有的模块都会依赖于Tensor，将公共的成员放到TensorBase中，可以尽量避免Tensor定义的修改带来的不必要的编译。
 
 ```C++
 // torch/include/ATen/core/TensorBase.h
@@ -385,7 +423,68 @@ class Tensor(torch._C._TensorBase):
 ```
 
 
-### TensorOption
+### Tensor的创建
+
+根据签名THPVariable的类型绑定，我们知道在Python层面创建Tensor时会调用THPVariable_pynew()函数，之后调用base_tensor_ctor()创建了C++层面的Tensor对象，然后封装成PYObject返回给Python解释器。我们如果想了解具体的创建过程，可以分析一下base_tensor_ctor()这个函数。
+
+在Python层面创建Tensor时（调用Tensor构造函数），有多种参数可以选择，例如基于数组创建，基于已有的Tensor创建，指定device和data_type等，比多态更为灵活，但是在C++层面，统一调用的都是THPVariable_pynew()函数，因此在拿到缺省的dispatch_key和scalar_type后，会根据不同的签名进行不同的处理。
+
+```C++
+// torch/csrc/utils/tensor_new.cpp
+
+Tensor legacy_tensor_generic_ctor_new(c10::DispatchKey dispatch_key, at::ScalarType scalar_type, PyObject* args, PyObject* kwargs, CtorOrNew ctor_or_new) {
+  auto options = dispatchKeyToTensorOptions(dispatch_key);
+  static PythonArgParser parser({
+    "new(*, Device? device=None)",
+    "new(Storage storage)",
+    "new(*, int64_t cdata)|hidden",
+    // This constructor is no longer legacy, it will also be usable for
+    // subclass initialization
+    "new(Tensor other)",
+    "new(Tensor other, *, Device? device=None)|hidden",  // prevent Tensor matching with IntArrayRef, PyObject*
+    "new(IntArrayRef size, *, Device? device=None)",
+    "new(PyObject* data, *, Device? device=None)",
+  });
+
+  if (isSparse(dispatchKeyToBackend(dispatch_key))) {
+    return legacy_sparse_tensor_generic_ctor_new(dispatch_key, scalar_type, args, kwargs, ctor_or_new);
+  }
+
+  if (ctor_or_new == CtorOrNew::NEW) check_base_legacy_new(dispatch_key, c10::kStrided);
+
+  ParsedArgs<2> parsed_args;
+  auto r = parser.parse(args, kwargs, parsed_args);
+  if (r.idx == 0) {
+    //...
+  } else if (r.idx == 1) {
+    //...
+  } else if (r.idx == 2) {
+    //...
+  } else if (r.idx == 3) {
+    //...
+  } else if (r.idx == 4) {
+    //...
+  } else if (r.idx == 5) {
+    //...
+  } else if (r.idx == 6) {
+    auto deviceOptional = r.deviceOptional(1);
+    check_legacy_ctor_device(dispatch_key, deviceOptional);
+    return legacy_new_from_sequence(options, scalar_type, deviceOptional, r.pyobject(0));
+  }
+  throw std::runtime_error("new(): invalid arguments");
+}
+
+Tensor base_tensor_ctor(PyObject* args, PyObject* kwargs) {
+  return legacy_tensor_generic_ctor_new(
+    torch::tensors::get_default_dispatch_key(),   //缺省dispatch_key为DispatchKey::CPU
+    torch::tensors::get_default_scalar_type(),    //缺省类型为Float
+    args, kwargs, CtorOrNew::BASE_CTOR
+  );
+}
+
+
+
+```
 
 Note: 参考注释吧
 
