@@ -26,6 +26,12 @@
 
 ## 数据并行与模型并行
 
+## map-reduce
+
+上述步骤提到的gather、reduce、scatter、broadcast都是来自MPI为代表的并行计算世界的概念，其中broadcast是主进程将相同的数据分发给组里的每一个其它进程；scatter是主进程将数据的每一小部分给组里的其它进程；gather是将其它进程的数据收集过来；reduce是将其它进程的数据收集过来并应用某种操作（比如SUM），在gather和reduce概念前面还可以加上all，如all_gather，all_reduce，那就是多对多的关系了，如下图所示（注意reduce的操作不一定是SUM，PyTorch目前实现了SUM、PRODUCT、MAX、MIN这四种）：
+
+<img src="../images/distributed_dp_1.webp"/>
+
 ### 数据并行
 
 ### 模型并行
@@ -135,6 +141,25 @@ def reduce_storage(storage):
 
 ### DataParallel（DP）
 
+如果我们用于训练模型的机器有多个GPU卡，并且也不需要同时训练多个模型，这时我们可以使用DataParallel来进行单机多卡训练。
+
+DataParallel基于数据并行进行训练，在每块卡上都保存模型的一个副本，但是各个GPU卡上处理的数据是不同的，因此是一个典型的数据并行的实现，下面是基于DataParallel的基本训练过程：
+
+<ol>
+<li> <font color=red>模型参数从主GPU卡以"broadcast"的方式复制到其他GPU卡上</font>
+<li> <font color=red>数据则拆分成不同的块送给不同的GPU卡</font>
+<li> 在GPU卡上分别完成前向计算
+<li> <font color=red>网络的输出以"gather"的方式收集到主GPU卡上</font>
+<li> 在主GPU卡上完成loss的计算
+<li> <font color=red>主GPU卡再将loss"scatter"到其余GPU卡上</font>
+<li> 各个GPU卡各自通过反向传播计算梯度
+<li> <font color=red>每个GPU卡上的梯度被"reduce"到主GPU卡上</font>
+<li> 主GPU卡上更新模型参数
+<li> 回到第一步，开始下一轮模型迭代
+</ol>
+
+下面我们看看PyTorch是怎样实现这个过程的。
+
 ```Python
 #数据集的长度为100，batch size为32，fc层的输入是5，输出是2
 input_size = 5
@@ -145,17 +170,93 @@ data_size = 100
 
 model = Model(input_size, output_size)
 if torch.cuda.device_count() > 1:
-    print("Gemfield have ", torch.cuda.device_count(), "GPUs!")
     model = nn.DataParallel(model)
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-model.to(device)
 rand_loader = DataLoader(dataset=RandomDataset(input_size, data_size),batch_size=batch_size, shuffle=True)
 
 for data in rand_loader:
     input = data.to(device)
     output = model(input)
     print("Outside: input size", input.size(),"output_size", output.size())
+```
+
+Pytorch使用nn.DataParallel对用户的Model进行了封装，并指明需要并行训练的设备id列表，如果不传递设备id的列表，则使用主机上可用的所有GPU。当然也可以指定哪个卡作为主GPU卡，缺省情况下第一个卡作为主GPU卡。
+
+相应实现的代码如下，注意此时只是把模型放到了第一个卡上。
+
+```Python
+# torch/nn/parallel/data_parallel.py
+
+class DataParallel(Module):
+    def __init__(self, module, device_ids=None, output_device=None, dim=0):
+        super(DataParallel, self).__init__()
+        torch._C._log_api_usage_once("torch.nn.parallel.DataParallel")
+        device_type = _get_available_device_type()
+        if device_type is None:
+            self.module = module
+            self.device_ids = []
+            return
+
+        if device_ids is None:
+            device_ids = _get_all_device_indices()
+
+        if output_device is None:
+            output_device = device_ids[0]
+
+        self.dim = dim
+        self.module = module
+        self.device_ids = [_get_device_index(x, True) for x in device_ids]
+        self.output_device = _get_device_index(output_device, True)
+        self.src_device_obj = torch.device(device_type, self.device_ids[0])
+
+        _check_balance(self.device_ids)
+
+        if len(self.device_ids) == 1:
+            self.module.to(self.src_device_obj)
+
+```
+
+之后数据仍然是按照正常的batch_size加载，直到开始进行前向计算，步骤2,3,4都是在forward()方法中完成的，其中可以看到DataParallel实现了了replicate、scatter、parallel_apply、gather等方法来实现不同GPU卡之间的数据通信。
+
+```Python
+# torch/nn/parallel/data_parallel.py
+
+class DataParallel(Module):
+
+    def forward(self, *inputs, **kwargs):
+        with torch.autograd.profiler.record_function("DataParallel.forward"):
+            if not self.device_ids:
+                return self.module(*inputs, **kwargs)
+
+            for t in chain(self.module.parameters(), self.module.buffers()):
+                if t.device != self.src_device_obj:
+                    raise RuntimeError("module must have its parameters and buffers "
+                                       "on device {} (device_ids[0]) but found one of "
+                                       "them on device: {}".format(self.src_device_obj, t.device))
+
+            inputs, kwargs = self.scatter(inputs, kwargs, self.device_ids)
+
+            if not inputs and not kwargs:
+                inputs = ((),)
+                kwargs = ({},)
+
+            if len(self.device_ids) == 1:
+                return self.module(*inputs[0], **kwargs[0])
+            replicas = self.replicate(self.module, self.device_ids[:len(inputs)])
+            outputs = self.parallel_apply(replicas, inputs, kwargs)
+            return self.gather(outputs, self.output_device)
+
+    def replicate(self, module, device_ids):
+        return replicate(module, device_ids, not torch.is_grad_enabled())
+
+    def scatter(self, inputs, kwargs, device_ids):
+        return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim)
+
+    def parallel_apply(self, replicas, inputs, kwargs):
+        return parallel_apply(replicas, inputs, kwargs, self.device_ids[:len(replicas)])
+
+    def gather(self, outputs, output_device):
+        return gather(outputs, output_device, dim=self.dim)
 ```
 本来batch_size是32，但是由于使用了DataParallel，而Gemfield有2个GPU，因此一个batch被划分成了2份，也就是tensor.split(16)，分别送往两个GPU上。值得注意的是：在第一次调用
 
@@ -169,15 +270,11 @@ output = model(input)
 
 我们来总结下DataParallel一次迭代的过程:
 
-    DataLoader把数据通过多个worker读到主进程的内存中；通过tensor的split语义，将一个batch的数据切分成多个更小的batch，然后分别送往不同的CUDA设备；在不同的cuda设备上完成前向计算，网络的输出被gather到主CUDA设备上（初始化时使用的设备），loss而后在这里被计算出来；loss然后被scatter到每个CUDA设备上，每个CUDA设备通过BP计算得到梯度；然后每个CUDA设备上的梯度被reduce到主CUDA设备上，然后模型权重在主CUDA设备上获得更新；在下一次迭代之前，主CUDA设备将模型参数broadcast到其它CUDA设备上，完成权重参数值的同步。
-
-上述步骤提到的gather、reduce、scatter、broadcast都是来自MPI为代表的并行计算世界的概念，其中broadcast是主进程将相同的数据分发给组里的每一个其它进程；scatter是主进程将数据的每一小部分给组里的其它进程；gather是将其它进程的数据收集过来；reduce是将其它进程的数据收集过来并应用某种操作（比如SUM），在gather和reduce概念前面还可以加上all，如all_gather，all_reduce，那就是多对多的关系了，如下图所示（注意reduce的操作不一定是SUM，PyTorch目前实现了SUM、PRODUCT、MAX、MIN这四种）：
-
-<img src="../images/distributed_dp_1.webp"/>
+DataLoader把数据通过多个worker读到主进程的内存中；通过tensor的split语义，将一个batch的数据切分成多个更小的batch，然后分别送往不同的CUDA设备；在不同的cuda设备上完成前向计算，网络的输出被gather到主CUDA设备上（初始化时使用的设备），loss而后在这里被计算出来；loss然后被scatter到每个CUDA设备上，每个CUDA设备通过BP计算得到梯度；然后每个CUDA设备上的梯度被reduce到主CUDA设备上，然后模型权重在主CUDA设备上获得更新；在下一次迭代之前，主CUDA设备将模型参数broadcast到其它CUDA设备上，完成权重参数值的同步。
 
 DataParallel通过复制一个网络到多个cuda设备，然后再split一个batch的data到多个cuda设备，通过这种并行计算的方式解决了batch很大的问题，但也有自身的不足：
 
-    它无法跨越机器，DataParallel是单进程多线程的，无法在多个机器上工作；它基于多线程的方式，确实方便了信息的交换，但受困于GIL；数据集先拷贝到主进程，然后再split到每个CUDA设备上；权重参数只在主CUDA上更新，需要每次迭代前向所有的CUDA设备做一次同步；每次迭代的网络输出需要gather到主的CUDA设备上；如果模型太大需要使用model parallel的时候，DataParallel目前还不支持；
+它无法跨越机器，DataParallel是单进程多线程的，无法在多个机器上工作；它基于多线程的方式，确实方便了信息的交换，但受困于GIL；数据集先拷贝到主进程，然后再split到每个CUDA设备上；权重参数只在主CUDA上更新，需要每次迭代前向所有的CUDA设备做一次同步；每次迭代的网络输出需要gather到主的CUDA设备上；如果模型太大需要使用model parallel的时候，DataParallel目前还不支持；
 
 这个时候，DistributedDataParallel来了，并且自此之后，不管是单机还是多机，我们都推荐使用DDP来代替DP（DataParallel）。
 
