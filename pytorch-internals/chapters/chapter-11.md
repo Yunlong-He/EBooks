@@ -315,12 +315,7 @@ net=net.module
 optimizer.step() --> optimizer.module.step()
 ```
 
-DataParallel通过复制一个网络到多个cuda设备，然后再split一个batch的data到多个cuda设备，通过这种并行计算的方式解决了batch很大的问题，但也有自身的不足：
-
-它无法跨越机器，DataParallel是单进程多线程的，无法在多个机器上工作；它基于多线程的方式，确实方便了信息的交换，但受困于GIL；数据集先拷贝到主进程，然后再split到每个CUDA设备上；权重参数只在主CUDA上更新，需要每次迭代前向所有的CUDA设备做一次同步；每次迭代的网络输出需要gather到主的CUDA设备上；如果模型太大需要使用model parallel的时候，DataParallel目前还不支持；
-
-这个时候，DistributedDataParallel来了，并且自此之后，不管是单机还是多机，我们都推荐使用DDP来代替DP（DataParallel）。
-
+DataParallel只支持数据并行，并且只限于单机上的多卡训练，因此加速效果有限，也不能处理更大的模型。如果需要更好的扩展性，可以使用DistributedDataParallel（DDP)。
 
 ### DistributedDataParallel（DDP）
 
