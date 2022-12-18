@@ -169,10 +169,13 @@ batch_size = 32
 data_size = 100
 
 model = Model(input_size, output_size)
+optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 if torch.cuda.device_count() > 1:
     model = nn.DataParallel(model)
+    optimizer = nn.DataParallel(optimizer)
 
 rand_loader = DataLoader(dataset=RandomDataset(input_size, data_size),batch_size=batch_size, shuffle=True)
+
 
 for data in rand_loader:
     input = data.to(device)
@@ -258,19 +261,59 @@ class DataParallel(Module):
     def gather(self, outputs, output_device):
         return gather(outputs, output_device, dim=self.dim)
 ```
-本来batch_size是32，但是由于使用了DataParallel，而Gemfield有2个GPU，因此一个batch被划分成了2份，也就是tensor.split(16)，分别送往两个GPU上。值得注意的是：在第一次调用
 
-model.to(device)
+真正的通信实现在C++中，例如broadcast, 我们可以追踪到comm.py中：
+```Python
+# torch/nn/parallel/comm.py
 
-的时候，模型被加载到了第一个GPU设备上，而在第一次调用
+def broadcast_coalesced(tensors, devices, buffer_size=10485760):
+    devices = [_get_device_index(d) for d in devices]
+    tensors = [_handle_complex(t) for t in tensors]
+    return torch._C._broadcast_coalesced(tensors, devices, buffer_size)
 
-output = model(input)
+```
 
-的时候（也就是在进行forward的时候），模型被复制到了其余的GPU上，这里是第2个GPU。程序输出如下（可见大小为32的batch被拆分成了大小为16的batch）
+在C++中，对于broadcast操作，会调用到tensor::copy()方法。如果有nccl的支持，PyTorch会调用nccl库来发送和接收Tensor的数据。
 
-我们来总结下DataParallel一次迭代的过程:
+```C++
+// torch/csrc/cuda/comm.cpp
 
-DataLoader把数据通过多个worker读到主进程的内存中；通过tensor的split语义，将一个batch的数据切分成多个更小的batch，然后分别送往不同的CUDA设备；在不同的cuda设备上完成前向计算，网络的输出被gather到主CUDA设备上（初始化时使用的设备），loss而后在这里被计算出来；loss然后被scatter到每个CUDA设备上，每个CUDA设备通过BP计算得到梯度；然后每个CUDA设备上的梯度被reduce到主CUDA设备上，然后模型权重在主CUDA设备上获得更新；在下一次迭代之前，主CUDA设备将模型参数broadcast到其它CUDA设备上，完成权重参数值的同步。
+static inline std::vector<Tensor>& _broadcast_out_impl(
+    const Tensor& tensor,
+    std::vector<Tensor>& out_tensors) {
+#ifdef USE_NCCL
+  std::vector<Tensor> nccl_list;
+  nccl_list.reserve(out_tensors.size() + 1);
+  nccl_list.push_back(tensor);
+  for (auto& out_tensor : out_tensors) {
+    nccl_list.push_back(out_tensor);
+  }
+  if (nccl::is_available(nccl_list)) {
+    nccl::broadcast(nccl_list);
+  } else {
+#else
+  {
+#endif
+    for (auto& out_tensor : out_tensors) {
+      out_tensor.copy_(tensor, /*non_blocking=*/true);
+    }
+  }
+  return out_tensors;
+}
+```
+
+对于DataParallel，在保存模型的时候，需要通过.module成员来访问真实的模型。
+
+```Python
+#保存模型：
+torch.save(model.module.state_dict(), path)
+#加载模型：
+net=nn.DataParallel(Resnet18())
+net.load_state_dict(torch.load(path))
+net=net.module
+#优化器使用：
+optimizer.step() --> optimizer.module.step()
+```
 
 DataParallel通过复制一个网络到多个cuda设备，然后再split一个batch的data到多个cuda设备，通过这种并行计算的方式解决了batch很大的问题，但也有自身的不足：
 
@@ -280,9 +323,13 @@ DataParallel通过复制一个网络到多个cuda设备，然后再split一个ba
 
 
 ### DistributedDataParallel（DDP）
+
+
+
 ### torch.distributed.rpc
 
 ## 参考
 - PyTorch的分布式 https://zhuanlan.zhihu.com/p/136372142
 - 周末漫谈——Pytorch MultiProcessing的Custom Reduction https://zhuanlan.zhihu.com/p/397498221
+- Pytorch的nn.DataParallel https://zhuanlan.zhihu.com/p/102697821
 
