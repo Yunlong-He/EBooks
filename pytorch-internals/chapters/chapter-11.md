@@ -24,17 +24,36 @@
 <img src='../images/big_model_trends.webp'/>
 <font size=2 style='italic'>来源：Compute Trends Across Three Eras of Machine Learning</font>
 
-## 数据并行与模型并行
+业界流行的训练方法是使用mini-batch SGD，每一次迭代包括以下几个步骤：
+- 从数据集中读取一个mini-batch，batch-size可以根据数据集、模型、GPU卡的显存容量等自行设置。
+- 使用模型进行前向计算得到输出。
+- 根据损失函数和数据集的label，计算损失。
+- 根据损失进行反向传播，得到各个参数的梯度。
+- 利用优化算法对参数进行梯度更新。
 
-## map-reduce
+这个过程对于单机单卡训练来说是很自然的，但是很多场景下数据集都比较大，需要使用多卡甚至多机并行来加速。
+
+## 数据并行训练
+数据并行是为应对数据集过大而提出的很自然的一种加速方法，其思想是将数据集拆分成多份，分发给不同的计算单元，每个计算单元根据自己的数据分别进行模型的训练。从数据集的消耗上看，加速是很明显的。
+
+但是对于深度学习模型来说，我们要训练的是一个最终的高精度模型，而不是多个不同的低精度模型，因此在训练过程中，需要在不同的计算单元间进行模型参数的同步，由此会带来额外的通信负担，从而影响性能。另外由于深度学习模型训练的特殊性，不同的同步方式也会影响到收敛的速度及模型的精度，因此产生了多种多样的数据并行的模式。
+
+### AllReduce
+
+最常见的一种模式，是
+
+
+### RingReduce
+
+
+
+对于框架来讲，应该尽量支持常用的并行模式。
+
+## 模型并行训练
 
 上述步骤提到的gather、reduce、scatter、broadcast都是来自MPI为代表的并行计算世界的概念，其中broadcast是主进程将相同的数据分发给组里的每一个其它进程；scatter是主进程将数据的每一小部分给组里的其它进程；gather是将其它进程的数据收集过来；reduce是将其它进程的数据收集过来并应用某种操作（比如SUM），在gather和reduce概念前面还可以加上all，如all_gather，all_reduce，那就是多对多的关系了，如下图所示（注意reduce的操作不一定是SUM，PyTorch目前实现了SUM、PRODUCT、MAX、MIN这四种）：
 
 <img src="../images/distributed_dp_1.webp"/>
-
-### 数据并行
-
-### 模型并行
 
 ## Horovod
 
@@ -327,4 +346,5 @@ DataParallel只支持数据并行，并且只限于单机上的多卡训练，�
 - PyTorch的分布式 https://zhuanlan.zhihu.com/p/136372142
 - 周末漫谈——Pytorch MultiProcessing的Custom Reduction https://zhuanlan.zhihu.com/p/397498221
 - Pytorch的nn.DataParallel https://zhuanlan.zhihu.com/p/102697821
-
+- https://zhuanlan.zhihu.com/p/358974461
+- https://www.sohu.com/a/467324131_115128#:~:text=%E7%9B%AE%E5%89%8D%EF%BC%8C%E5%BC%80%E6%BA%90%E7%9A%84%20GPT%20%E6%A8%A1%E5%9E%8B%E5%BA%93%E4%B8%BB%E8%A6%81%E6%98%AF%20NVIDIA%E5%BC%80%E5%8F%91%E7%9A%84%20Megatron-LM%20%E5%92%8C%E7%BB%8F%E8%BF%87%E5%BE%AE%E8%BD%AF%E6%B7%B1%E5%BA%A6%E5%AE%9A%E5%88%B6%E5%BC%80%E5%8F%91%E7%9A%84%20DeepSpeed%EF%BC%8C%E5%85%B6%E4%B8%AD%EF%BC%8CDeepSpeed%20%E7%9A%84%E6%A8%A1%E5%9E%8B%E5%B9%B6%E8%A1%8C%E7%AD%89%E5%86%85%E6%A0%B8%E5%8F%96%E8%87%AA,PyTorch%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%AE%AD%E7%BB%83%20GPT%20%E8%80%8C%E8%AE%BE%E8%AE%A1%E3%80%82%20%E4%B8%8D%E8%BF%87%E5%9C%A8%E5%AE%9E%E9%99%85%E8%AE%AD%E7%BB%83%E4%B8%AD%EF%BC%8CPyTorch%20%E3%80%81%20Megatron%E3%80%81DeepSpeed%20%E9%83%BD%E8%B5%B0%E4%BA%86%E4%B8%80%E6%9D%A1%E9%9D%9E%E5%B8%B8%E9%95%BF%E7%9A%84%E5%BC%AF%E8%B7%AF%E3%80%82
