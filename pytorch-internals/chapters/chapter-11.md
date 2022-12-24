@@ -38,10 +38,32 @@
 
 但是对于深度学习模型来说，我们要训练的是一个最终的高精度模型，而不是多个不同的低精度模型，因此在训练过程中，需要在不同的计算单元间进行模型参数的同步，由此会带来额外的通信负担，从而影响性能。另外由于深度学习模型训练的特殊性，不同的同步方式也会影响到收敛的速度及模型的精度，因此产生了多种多样的数据并行的模式。
 
-### AllReduce
+### MPI通信标准
 
-最常见的一种模式，是
+虽然深度学习模型的训练不一定要基于MPI来实现，但是作为几十年来最为流行的数据通信标准，MPI定义的很多概念仍然被新的框架广泛使用，因此有必要在这里再简要回顾一下。
 
+MPI由MPI Forum创建并维护，截至目前成熟的版本是4.0，但MPI Forum正在讨论5.0的标准，5.0的重点预计是在持久化通信及Buffered Pool上。
+
+MPI定义了一系列与语言无关、平台无关的API接口，用于跨节点跨进程的不同地址空间之间的消息传递。但MPI标准也定义了一些相关的扩展，例如集合操作、远程内存访问操作、动态进程创建、并行I/O等，所有的操作都被定义为函数、子例程或方法。由于C语言和Fortran语言在科学计算领域的广泛使用，MPI标准也定义了相关的C语言及Fortran语言的接口。
+
+MPI支持多种通信模式，比较重要的是点到点通信(Point-to-Point)和集合通信(Collective)，每种通信的支持阻塞式和非阻塞式两种操作模型。
+
+在MPI中，一般在每个进程上启动的都是同一份程序（当然也可以不同），但是不同节点被分配了不同的标识（rank），这样不同的节点实际的运行逻辑是不同的。
+
+点到点通信，主要是指两个对应的通信端点之间的数据传输，例如下面是阻塞式的数据发送和接收的函数定义（C语言）：
+int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest,int tag, MPI_Comm comm)
+int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Status *status)
+
+集合通信，指的是一组进程之间的数据发送和接收，包括以下几种操作：
+- 进程之间的屏障同步（Barrier synchronization）
+- 将数据从一个进程广播给组内所有进程(Broadcast)
+- 将数据从组内进程收集到一个进程中(Gather)
+- 将数据从一个进程分给组内所有进程(Scatter)
+- 从组内进程收集数据，并发给所有的进程（AllGather)
+- 从组内进程分发/收集（Scatter/Gather ）数据，并发给所有组内进程(AlltoAll)
+- 全局归约（sum/max/min等），并把结果发给所有进程或其中一个进程(Reduce)
+- 归约和分发的组合操作(Reduce and Scatter)
+<img src="../images/mpi_4.png"/>
 
 ### RingReduce
 
