@@ -56,26 +56,39 @@ int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, M
 
 集合通信，指的是一组进程之间的数据发送和接收，包括以下几种操作：
 - 进程之间的屏障同步（Barrier synchronization）
+int MPI_Barrier(MPI_Comm comm);
 - 将数据从一个进程广播给组内所有进程(Broadcast)
+int MPI_Bcast(void* buffer, int count, MPI_Datatype datatype, int root, MPI_Comm comm);
 - 将数据从组内进程收集到一个进程中(Gather)
+int MPI_Gather(void* sendbuf, int sendcount, MPI_Datatype sendtype, void* recvbuf, int recvcount, MPI_Datatype recvtype, int root,  MPI_Comm comm);
+int MPI_Gatherv(void* sendbuf, int sendcount, MPI_Datatype sendtype, void* recvbuf, int recvcounts, int *displs, MPI_Datatype recvtype, int root,  MPI_Comm comm);
 - 将数据从一个进程分给组内所有进程(Scatter)
+int MPI_Scatter(void* sendbuf, int sendcount, MPI_Datatype sendtype, void* recvbuf, int recvcount, MPI_Datatype recvtype, int root, MPI_Comm comm);
 - 从组内进程收集数据，并发给所有的进程（AllGather)
+int MPI_Allgather(void* sendbuf, int sendcount, MPI_Datatype, sendtype, void* recvbuf, int recvcount, MPI_Datatype recvtype, MPI_Comm comm);
 - 从组内进程分发/收集（Scatter/Gather ）数据，并发给所有组内进程(AlltoAll)
+int MPI_AlltoAll(void* sendbuf, int sendcount, MPI_Datatype, sendtype, void* recvbuf, int recvcount, MPI_Datatype recvtype, MPI_Comm comm);
 - 全局归约（sum/max/min等），并把结果发给所有进程或其中一个进程(Reduce)
+int MPI_Reduce(void* sendbuf, void* recvbuf, int count, MPI_Datatype, datatype, MPI_Op op, int root, MPI_Comm comm);
+int MPI_Allreduce(void* sendbuf, void* recvbuf, int count, MPI_Datatype, datatype, MPI_Op op, int root, MPI_Comm comm);
+
 - 归约和分发的组合操作(Reduce and Scatter)
+int MPI_Reduce_scatter(void* sendbuf, void* recvbuf, int recvcounts, MPI_Datatype, datatype, MPI_Op op, int root, MPI_Comm comm);
+
 <img src="../images/mpi_4.png"/>
 
-### RingReduce
+
+### AllReduce
+
+在MPI标准定义的多个操作中，AllReduce操作是Allgather的一种，并且AllReduce操作也是深度学习中非常重要的通信原语。如果要支持数据并行，回顾前面模型训练的几个基本步骤可以看出：
+- 不同节点处理的数据不同，因此前向计算后得到的结果是不同的
+- 可以有多种计算最终模型的方式，例如将所有结果收集到一个节点后统一计算梯度，
+- 或者在不同节点上分别计算梯度，再将梯度统一收集到一个节点
+- 在一个节点上更新参数后，需要向其他节点同步更新后的模型参数
+
+这个过程和AllReduce的语义非常吻合，因此在分布式深度学习模型训练的场景下，大家更多时候会关注如何高效实现AllReduce操作，尤其是在数据量很大、模型很大的同时保证迭代的效率。
 
 
-
-对于框架来讲，应该尽量支持常用的并行模式。
-
-## 模型并行训练
-
-上述步骤提到的gather、reduce、scatter、broadcast都是来自MPI为代表的并行计算世界的概念，其中broadcast是主进程将相同的数据分发给组里的每一个其它进程；scatter是主进程将数据的每一小部分给组里的其它进程；gather是将其它进程的数据收集过来；reduce是将其它进程的数据收集过来并应用某种操作（比如SUM），在gather和reduce概念前面还可以加上all，如all_gather，all_reduce，那就是多对多的关系了，如下图所示（注意reduce的操作不一定是SUM，PyTorch目前实现了SUM、PRODUCT、MAX、MIN这四种）：
-
-<img src="../images/distributed_dp_1.webp"/>
 
 ## Horovod
 
