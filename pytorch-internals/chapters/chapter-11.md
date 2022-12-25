@@ -115,7 +115,7 @@ $$ T = log_2N*(α + S/B + S*C ) $$
 
 #### RingAllReduce
 
-在数据量很大的情况下，ButterFly直接传输所有的数据，可能会带来网络的抖动，2017年百度提出了Ring AllReduce算法，将每个节点的数据切成1/N份，各个节点首尾相连形成一个环，每次只向相邻节点传输1/N的数据，如下图所示：
+在数据量很大的情况下，ButterFly直接传输所有的数据，可能会带来网络的抖动，2017年百度将Ring算法应用到了深度学习领域。Ring AllReduce的思路是：将每个节点的数据切成1/N份，各个节点首尾相连形成一个环，每次只向相邻节点传输1/N的数据，如下图所示：
 
 <img src="../images/mpi_8.webp" width=500, height=350/>
 第一阶段通过(N-1)步，让每个节点都得到1/N的完整数据块。每一步的通信耗时是$α+S/(NB)$，计算耗时是$(S/N)*C$。 这一阶段也可视为scatter-reduce。
@@ -124,9 +124,45 @@ $$ T = log_2N*(α + S/B + S*C ) $$
 
 整体耗时约为：
 $$ T = 2*(N-1)*[α+S/(NB)] + (N-1)*[(S/N)*C]$$
-## Horovod
+
+#### Segmented Ring算法
+
+在数据量非常大的情况下，直接按照进程数来切分数据，可能导致单次要传输的数据依然过大，影响性能，所以改成分段执行ring。
+
+其所需步数以及耗时和选定的切分size大小有关。切分后的过程和ring类似，此处不再赘述。
+
+另外由于不同的硬件环境的差异，传统的平等对待所有节点的算法不能充分发挥硬件能力，在之后出现了多种Ring算法的改良，如2018年下半年腾讯提出的分层Ring AllReduce，2018年11月索尼公司提出2D-Torus算法，2018年12月谷歌提出2D-Mesh算法，2018年7月IBM提出3D-Torus算法，2019年上半年NCCL2.4提出double binary tree算法等等，其思想大都是通过分层，先进行组内数据同步，再进行组间的通信。
 
 ## NCCL
+
+NCCL是Nvidia2015年推出的通信库，支持集合通信和点到点通信原语，主要目标是对应用的GPU间通信提供支持。
+
+除了点到点send/receive的支持外，NCCL支持以下几种集合通信的原语：
+- AllReduce
+- Broadcast
+- Reduce
+- AllGather
+- ReduceScatter
+
+在通信方式上，NCCL支持PCIe, NVLINK, InfiniBand Verbs以及 IP sockets等。
+
+## Gloo
+
+Gloo是facebook开源的用于机器学习任务中的集合通信库，其实现了一些常见的Allreduce算法：
+
+    allreduce_ring
+    allreduce_ring_chunked
+    allreduce_halving_doubling
+    allreducube_bcube
+
+除此之外，Gloo还有一系列基于CUDA-aware为目的的Allreduce实现：
+
+    cuda_allreduce_ring
+    cuda_allreduce_ring_chunked
+    cuda_allreduce_halving_doubling
+    cuda_allreduce_halving_doubling_pipelined
+
+## Horovod
 
 ## PyTorch中的分布式训练
 
