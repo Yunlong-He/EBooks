@@ -88,7 +88,32 @@ int MPI_Reduce_scatter(void* sendbuf, void* recvbuf, int recvcounts, MPI_Datatyp
 
 这个过程和AllReduce的语义非常吻合，因此在分布式深度学习模型训练的场景下，大家更多时候会关注如何高效实现AllReduce操作，尤其是在数据量很大、模型很大的同时保证迭代的效率。
 
+#### reduce+broadcast
+AllReduce最直观的一种实现方式如下图所示，parameter server作为中心节点，先全局reduce接收所有其他节点的数据，经过本地计算后，再broadcast回所有其他节点。其中实线表示真实发生了的通信；而虚线表示只是示意，并没有实际通信。
+<img src="../images/mpi_5.webp" width=500, height=500/>
 
+为了比较不同实现的效率，业界有一个通用的计算方法，用α表示2个通信节点间的latency， S(ize)表示要allreduce的数据块大小， B(andwidth)表示2个通信节点间的带宽， C(omputation)表示每字节数据的计算耗时。另外以N(umber)表示节点个数。据此对于reduce+broadcast的实现方式，总的耗时为：
+$$T = 2*(α + S/B) + N*S*C$$
+很明显，因为数据都汇总到第四个节点上，该节点的带宽将成为瓶颈。
+
+#### recursive halving and doubling
+reduce+broadcast的方式中，大量的数据传输发生在最后一个节点上，在传输过程中，其余节点的带宽并没有被利用起来，因此为了避免单节点的带宽瓶颈，可以采用recursive halving and doubling的算法，这是经典的树形算法，过程如下图：
+<img src="../images/mpi_6.webp" width=500, height=500/>
+
+在这种情况下，如果节点数是2的幂，所需通信步数是$2*log_2N$，我们假设在传输后会马上在目标节点进行计算，那么总体的耗时为：
+
+$$ T = 2*log_2N*(α + S/B + S*C ) $$
+
+#### Butterfly
+上一个算法虽然改进了单个节点的带宽瓶颈，但在halving阶段仍然有一半的节点没有进行数据传输，Butterfly算法则弥补了这一点。通信的每步中，所有节点的send和recv带宽都被利用起来了。
+
+<img src="../images/mpi_7.webp" width=500, height=350/>
+
+如果节点数是2的幂，所需通信步数只要$log_2N$，总的耗时为：
+
+$$ T = log_2N*(α + S/B + S*C ) $$
+
+#### RingAllReduce
 
 ## Horovod
 
@@ -382,4 +407,5 @@ DataParallel只支持数据并行，并且只限于单机上的多卡训练，�
 - 周末漫谈——Pytorch MultiProcessing的Custom Reduction https://zhuanlan.zhihu.com/p/397498221
 - Pytorch的nn.DataParallel https://zhuanlan.zhihu.com/p/102697821
 - https://zhuanlan.zhihu.com/p/358974461
+- https://zhuanlan.zhihu.com/p/79030485
 - https://www.sohu.com/a/467324131_115128#:~:text=%E7%9B%AE%E5%89%8D%EF%BC%8C%E5%BC%80%E6%BA%90%E7%9A%84%20GPT%20%E6%A8%A1%E5%9E%8B%E5%BA%93%E4%B8%BB%E8%A6%81%E6%98%AF%20NVIDIA%E5%BC%80%E5%8F%91%E7%9A%84%20Megatron-LM%20%E5%92%8C%E7%BB%8F%E8%BF%87%E5%BE%AE%E8%BD%AF%E6%B7%B1%E5%BA%A6%E5%AE%9A%E5%88%B6%E5%BC%80%E5%8F%91%E7%9A%84%20DeepSpeed%EF%BC%8C%E5%85%B6%E4%B8%AD%EF%BC%8CDeepSpeed%20%E7%9A%84%E6%A8%A1%E5%9E%8B%E5%B9%B6%E8%A1%8C%E7%AD%89%E5%86%85%E6%A0%B8%E5%8F%96%E8%87%AA,PyTorch%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%AE%AD%E7%BB%83%20GPT%20%E8%80%8C%E8%AE%BE%E8%AE%A1%E3%80%82%20%E4%B8%8D%E8%BF%87%E5%9C%A8%E5%AE%9E%E9%99%85%E8%AE%AD%E7%BB%83%E4%B8%AD%EF%BC%8CPyTorch%20%E3%80%81%20Megatron%E3%80%81DeepSpeed%20%E9%83%BD%E8%B5%B0%E4%BA%86%E4%B8%80%E6%9D%A1%E9%9D%9E%E5%B8%B8%E9%95%BF%E7%9A%84%E5%BC%AF%E8%B7%AF%E3%80%82
