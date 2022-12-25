@@ -2,8 +2,11 @@
 
 - [为什么需要分布式训练？](#为什么需要分布式训练？)
 - [数据并行与模型并行](#数据并行与模型并行)
-- [Horovod](#Horovod)
+    - [MPI通信标准](#MPI通信标准)
+    - [AllReduce](#AllReduce)
 - [NCCL](#NCCL)
+- [Gloo](#Gloo)
+- [Horovod](#Horovod)
 - [PyTorch中的分布式训练](#PyTorch中的分布式训练)
     - [torch.multiprocessing](#torch.multiprocessing)
     - [torch.distributedDataParallel（DP）](#torch.distributedDataParallel（DP）)
