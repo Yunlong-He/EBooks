@@ -136,37 +136,6 @@ $$ T = 2*(N-1)*[α+S/(NB)] + (N-1)*[(S/N)*C]$$
 
 另外由于不同的硬件环境的差异，传统的平等对待所有节点的算法不能充分发挥硬件能力，在之后出现了多种Ring算法的改良，如2018年下半年腾讯提出的分层Ring AllReduce，2018年11月索尼公司提出2D-Torus算法，2018年12月谷歌提出2D-Mesh算法，2018年7月IBM提出3D-Torus算法，2019年上半年NCCL2.4提出double binary tree算法等等，其思想大都是通过分层，先进行组内数据同步，再进行组间的通信。
 
-## NCCL
-
-NCCL是Nvidia2015年推出的通信库，支持集合通信和点到点通信原语，主要目标是对应用的GPU间通信提供支持。
-
-除了点到点send/receive的支持外，NCCL支持以下几种集合通信的原语：
-- AllReduce
-- Broadcast
-- Reduce
-- AllGather
-- ReduceScatter
-
-在通信方式上，NCCL支持PCIe, NVLINK, InfiniBand Verbs以及 IP sockets等。
-
-## Gloo
-
-Gloo是facebook开源的用于机器学习任务中的集合通信库，其实现了一些常见的Allreduce算法：
-
-    allreduce_ring
-    allreduce_ring_chunked
-    allreduce_halving_doubling
-    allreducube_bcube
-
-除此之外，Gloo还有一系列基于CUDA-aware为目的的Allreduce实现：
-
-    cuda_allreduce_ring
-    cuda_allreduce_ring_chunked
-    cuda_allreduce_halving_doubling
-    cuda_allreduce_halving_doubling_pipelined
-
-## Horovod
-
 ## PyTorch中的分布式训练
 
 ### torch.multiprocessing
@@ -446,12 +415,72 @@ DataParallel只支持数据并行，并且只限于单机上的多卡训练，�
 
 ### DistributedDataParallel（DDP）
 
+2020年，PyTorch中开始支持分布式的数据并行，在Facebook的论文《PyTorch Distributed: Experiences on Accelerating Data Parallel Training》中，详细介绍了DDP的设计理念:
+
+- 数学上的等价性（Mathematical equivalence）。在分布式训练的场景下，应该保持和单机训练的数学等价性。这样可以保证同样的训练算法在分布式下能够得到类似的训练结果。
+- 非侵入式编程（Non-intrusive and interceptive API）。大部分算法科学家是在单机下设计并验证算法的，验证可行后再迁移到分布式的环境下进行训练，如果需要对原来的代码进行大量复杂的改造，会给算法工程师带来很大的障碍，因此，PyTorch中的DDP要支持以最少的代码改动将单机算法迁移到分布式下。
+- 性能保证（High Performance）。在分布式下，额外带来的数据传输在很大程度上会造成硬件计算上的不饱和，从而影响性能，因此DDP的另一个重要的设计目标就是保持高性能。
+
+### Parameter Server
+
+
+从使用上看，DDP与DP非常相似：
+```Python
+import argparse
+import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--save_dir", default='')
+parser.add_argument("--local_rank", default=-1)
+parser.add_argument("--world_size", default=1)
+args = parser.parse_args()
+
+# 初始化后端
+
+# world_size 指的是总的并行进程数目
+# 比如16张卡单卡单进程 就是 16
+# 但是如果是8卡单进程 就是 1
+# 等到连接的进程数等于world_size，程序才会继续运行
+torch.distributed.init_process_group(backend='nccl',
+                                         world_size=ws,
+                                         init_method='env://')
+
+torch.cuda.set_device(args.local_rank)
+
+device = torch.device(f'cuda:{args.local_rank}')
+
+model = nn.Linear(2,3).to(device)
+
+# train dataset
+# train_sampler
+# train_loader
+
+# 初始化 DDP，这里我们通过规定 device_id 用了单卡单进程
+# 实际上根据我们前面对 parallel_apply 的解读，DDP 也支持一个进程控制多个线程利用多卡
+model = DDP(model,
+            device_ids=[args.local_rank],
+            output_device=args.local_rank).to(device)
+
+
+# 保存模型 
+if torch.distributed.get_rank() == 0:
+  torch.save(model.module.state_dict(),
+             'results/%s/model.pth' % args.save_dir)
+```
+和DP的区别：
+- DDP支持多进程。
+- DP的通信成本随着GPU数量线性增长，而DDP支持Ring AllReduce，其通信成本是恒定的，与GPU数量无关。
+- 同步参数，DP通过收集梯度到device[0]，在device[0]更新参数，然后其他设备复制device[0]的参数实现各个模型同步；DDP 通过保证初始状态相同并且改变量也相同（指同步梯度），保证模型同步。
+
+DDP 通过在构建时注册 autograd hook 进行梯度同步。反向传播时，当一个梯度计算好后，相应的 hook 会告诉 DDP 可以用来归约。当一个桶里的梯度都可以了，Reducer 就会启动异步 allreduce 去计算所有进程的平均值。allreduce 异步启动使得 DDP 可以边计算边通信，提高效率。当所有桶都可以了，Reducer 会等所有 allreduce 完成，然后将得到的梯度写到 param.grad。
 
 
 ### torch.distributed.rpc
 
 ## 参考
 - PyTorch的分布式 https://zhuanlan.zhihu.com/p/136372142
+- https://zhuanlan.zhihu.com/p/343951042
 - 周末漫谈——Pytorch MultiProcessing的Custom Reduction https://zhuanlan.zhihu.com/p/397498221
 - Pytorch的nn.DataParallel https://zhuanlan.zhihu.com/p/102697821
 - https://zhuanlan.zhihu.com/p/358974461
