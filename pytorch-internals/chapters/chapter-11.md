@@ -7,11 +7,10 @@
 - [NCCL](#NCCL)
 - [Gloo](#Gloo)
 - [Horovod](#Horovod)
-- [PyTorch中的分布式训练](#PyTorch中的分布式训练)
-    - [torch.multiprocessing](#torch.multiprocessing)
-    - [torch.distributedDataParallel（DP）](#torch.distributedDataParallel（DP）)
-    - [DistributedDataParallel（DDP）](#DistributedDataParallel（DDP）)
-    - [torch.distributed.rpc](#torch.distributed.rpc)
+- [torch.multiprocessing](#torch.multiprocessing)
+- [torch.distributedDataParallel（DP）](#torch.distributedDataParallel（DP）)
+- [DistributedDataParallel（DDP）](#DistributedDataParallel（DDP）)
+- [torch.distributed.rpc](#torch.distributed.rpc)
 - [参考](#参考)
 
 ## 为什么需要分布式训练？
@@ -35,6 +34,41 @@
 - 利用优化算法对参数进行梯度更新。
 
 这个过程对于单机单卡训练来说是很自然的，但是很多场景下数据集都比较大，需要使用多卡甚至多机并行来加速。
+
+### 模型训练的并行方法
+>在探索 ZeRO 之前，我们需要先了解一下当前分布式训练主要的三种并行模式：数据并行、模型并行和流水线并行。
+>
+> 2.1 数据并行
+> 当模型规模足够小且单个 GPU 能够承载得下时，数据并行就是一种有效的分布式训练方式。因为每个 GPU 都会复制一份模型的参数，我们只需要把训练数据均分给多个不同的 GPU，然后让每个 GPU 作为一个计算节点
+> 独立的完成前向和反向传播运算。数据并行不仅通信量较小，而且可以很方便的做通信计算重叠，因此可以取得最好的加速比。
+
+> 2.2 模型并行
+> 如果模型的规模比较大，单个 GPU 的内存承载不下时，我们可以将模型网络结构进行拆分，将模型的单层分解成若干份，把每一份分配到不同的 GPU 中，从而在训练时实现模型并行。训练过程中，正向和反向传播计算出
+> 的数据通过使用 All gather 或者 All reduce 的方法完成整合。这样的特性使得模型并行成为处理模型中大 layer 的理想方案之一。然而，深度神经网络层与层之间的依赖，使得通信成本和模型并行通信群组中的
+> 计算节点 (GPU) 数量正相关。其他条件不变的情况下，模型规模的增加能够提供更好的计算通信比。
+
+> 2.3 流水线并行
+> 流水线并行，可以理解为层与层之间的重叠计算，也可以理解为按照模型的结构和深度，将不同的 layer 分配给指定 GPU 进行计算。相较于数据并行需要 GPU 之间的全局通信，流水线并行只需其之间点对点地通讯传
+> 递部分 activations，这样的特性可以使流水并行对通讯带宽的需求降到更低。然而，流水并行需要相对稳定的通讯频率来确保效率，这导致在应用时需要手动进行网络分段，并插入繁琐的通信原语。同时，流水线并行
+> 的并行效率也依赖各卡负载的手动调优。这些操作都对应用该技术的研究员提出了更高的要求。
+
+> 3 为什么需要ZeRO？
+> 在三种并行方式中，数据并行因其易用性，得到了最为广泛的应用。然而，数据并行会产生大量冗余 Model States 的空间占用。ZeRO 的本质，是在数据并行的基础上，对冗余空间占用进行深度优化。
+
+> 在大规模训练系列之技术挑战一文中，我们介绍了大规模训练中的显存占用可以分为 Model States 与 Activation 两部分，而 ZeRO 就是为了解决 Model States 而诞生的一项技术。
+
+> 首先，我们来聊一下模型在训练过程中 Model States 是由什么组成的：1. Optimizer States: Optimizer States 是 Optimizer 在进行梯度更新时所需要用到的数据，例如 SGD 中的Momentum以及使用混
+> 合精度训练时的Float32 Master Parameters。2. Gradient：在反向传播后所产生的梯度信息，其决定了参数的更新方向。3. Model Parameter: 模型参数，也就是我们在整个过程中通过数据“学习”的信息。
+
+> 在传统数据并行下，每个进程都使用同样参数来进行训练。每个进程也会持有对Optimizer States的完整拷贝，同样占用了大量显存。在混合精度场景下，以参数量为Ψ的模型和Adam optimzier为例，Adam需要保存：
+> - Float16的参数和梯度的备份。这两项分别消耗了2Ψ和2Ψ Bytes内存；（1 Float16 = 2 Bytes） - Float32的参数，Momentum，Variance备份，对应到 3 份4Ψ的内存占用。（1 Float32 = 4 Bytes）
+
+> 最终需要2Ψ + 2Ψ + KΨ = 16Ψ bytes的显存。一个7.5B参数量的模型，就需要至少 120 GB 的显存空间才能装下这些Model States。当数据并行时，这些重复的Model States会在N个GPU上复制N份[1]。
+
+> ZeRO 则在数据并行的基础上，引入了对冗余Model States的优化。使用 ZeRO 后，各个进程之后只保存完整状态的1/GPUs，互不重叠，不再存在冗余。在本文中，我们就以这个 7.5B 参数量的模型为例，量化各个级
+> 别的 ZeRO 对于内存的优化表现。
+
+
 
 ## 数据并行训练
 数据并行是为应对数据集过大而提出的很自然的一种加速方法，其思想是将数据集拆分成多份，分发给不同的计算单元，每个计算单元根据自己的数据分别进行模型的训练。从数据集的消耗上看，加速是很明显的。
@@ -136,9 +170,7 @@ $$ T = 2*(N-1)*[α+S/(NB)] + (N-1)*[(S/N)*C]$$
 
 另外由于不同的硬件环境的差异，传统的平等对待所有节点的算法不能充分发挥硬件能力，在之后出现了多种Ring算法的改良，如2018年下半年腾讯提出的分层Ring AllReduce，2018年11月索尼公司提出2D-Torus算法，2018年12月谷歌提出2D-Mesh算法，2018年7月IBM提出3D-Torus算法，2019年上半年NCCL2.4提出double binary tree算法等等，其思想大都是通过分层，先进行组内数据同步，再进行组间的通信。
 
-## PyTorch中的分布式训练
-
-### torch.multiprocessing
+## torch.multiprocessing
 
 对于分布式训练来说，不可避免的要在多个进程（本地或远程）之间传递数据，对PyTorch来说，传递的主要是Tensor。因此事先分布式训练的基础之一就是对Tensor的序列化。
 
@@ -235,7 +267,7 @@ def reduce_storage(storage):
 > 但是这种多进程的工作方式在遇到CUDA时有很多局限性，这导致了很多比较突兀的使用限制和代码编写方式：它规定了发送tensor的进程必须怎么怎么样、规定了接收tensor的进程必须怎么怎么样、规定了生产tensor的进程的生命周期必须怎么怎么样、限制不能转发收到的tensor......以至于这些条件只要有一个没有遵守，在CUDA上的multiprocessing就会出现预期之外的行为。为了突破这些限制和掣肘，DataParallel到来了。
 
 
-### DataParallel（DP）
+## DataParallel（DP）
 
 如果我们用于训练模型的机器有多个GPU卡，并且也不需要同时训练多个模型，这时我们可以使用DataParallel来进行单机多卡训练。
 
@@ -413,16 +445,14 @@ optimizer.step() --> optimizer.module.step()
 
 DataParallel只支持数据并行，并且只限于单机上的多卡训练，因此加速效果有限，也不能处理更大的模型。如果需要更好的扩展性，可以使用DistributedDataParallel（DDP)。
 
-### DistributedDataParallel（DDP）
+## DistributedDataParallel（DDP）
 
+### 使用DDP进行分布式模型训练
 2020年，PyTorch中开始支持分布式的数据并行，在Facebook的论文《PyTorch Distributed: Experiences on Accelerating Data Parallel Training》中，详细介绍了DDP的设计理念:
 
 - 数学上的等价性（Mathematical equivalence）。在分布式训练的场景下，应该保持和单机训练的数学等价性。这样可以保证同样的训练算法在分布式下能够得到类似的训练结果。
 - 非侵入式编程（Non-intrusive and interceptive API）。大部分算法科学家是在单机下设计并验证算法的，验证可行后再迁移到分布式的环境下进行训练，如果需要对原来的代码进行大量复杂的改造，会给算法工程师带来很大的障碍，因此，PyTorch中的DDP要支持以最少的代码改动将单机算法迁移到分布式下。
 - 性能保证（High Performance）。在分布式下，额外带来的数据传输在很大程度上会造成硬件计算上的不饱和，从而影响性能，因此DDP的另一个重要的设计目标就是保持高性能。
-
-### Parameter Server
-
 
 从使用上看，DDP与DP非常相似：
 ```Python
@@ -469,12 +499,276 @@ if torch.distributed.get_rank() == 0:
              'results/%s/model.pth' % args.save_dir)
 ```
 和DP的区别：
-- DDP支持多进程。
+- DDP支持多进程，而DP只支持单进程多线程。
 - DP的通信成本随着GPU数量线性增长，而DDP支持Ring AllReduce，其通信成本是恒定的，与GPU数量无关。
 - 同步参数，DP通过收集梯度到device[0]，在device[0]更新参数，然后其他设备复制device[0]的参数实现各个模型同步；DDP 通过保证初始状态相同并且改变量也相同（指同步梯度），保证模型同步。
 
+当然如果只有单机多卡，也可以使用DDP，这时可以创建多个进程，每个进程通过环境变量CUDA_VISIBLE_DEVICES指定哪个进程使用哪个卡，或者在运行的时候通过代码“torch.cuda.set_device(i)”来指定。对于每个进程，可以使用下面的代码来使用相应的卡：
+```Python
+    torch.distributed.init_process_group(
+    backend='nccl', world_size=N, init_method='...')
+    model = DistributedDataParallel(model, device_ids=[i], output_device=i)
+```
+
 DDP 通过在构建时注册 autograd hook 进行梯度同步。反向传播时，当一个梯度计算好后，相应的 hook 会告诉 DDP 可以用来归约。当一个桶里的梯度都可以了，Reducer 就会启动异步 allreduce 去计算所有进程的平均值。allreduce 异步启动使得 DDP 可以边计算边通信，提高效率。当所有桶都可以了，Reducer 会等所有 allreduce 完成，然后将得到的梯度写到 param.grad。
 
+一些约定：
+- 假设一个模型在M个节点上训练，每个节点的batch_size为N，如果损失函数是对于一个batch内不同样本的相加，那么梯度将是单机训练时(batch_size=M*N)的1/M。
+- 在不同进程之间不会广播神经网络参数，而是通过all-reduce来同步梯度，之后在所有进程中通过optimizer计算。在每个迭代里，Buffers（例如BatchNorm状态）会从rank 0的进程广播到整个系统。
+- 如果配合DistributedDataParallel和distributed-rpc-framework，则需要调用方法torch.distributed.autograd.backward()进行梯度的计算，并且基于torch.distributed.optim.DistributedOptimizer构建优化参数。
+- 当前DDP对gradient checkpointing支持的不多 with :meth:`torch.utils.checkpoint`. DDP will work as
+        expected when there are no unused parameters in the model and each layer
+        is checkpointed at most once (make sure you are not passing
+        `find_unused_parameters=True` to DDP). We currently do not support the
+        case where a layer is checkpointed multiple times, or when there unused
+        parameters in the checkpointed model.
+
+
+
+#### DDP初始化代码分析
+DDP的初始化参数如下：
+    module (Module): 需要进行分布式训练的模型
+    device_ids：
+    output_device (int or torch.device): Device location of output for
+                      single-device CUDA modules. For multi-device modules and
+                      CPU modules, it must be ``None``, and the module itself
+                      dictates the output location. (default: ``device_ids[0]``
+                      for single-device modules)
+        broadcast_buffers (bool): Flag that enables syncing (broadcasting)
+                          buffers of the module at beginning of the ``forward``
+                          function. (default: ``True``)
+        process_group: The process group to be used for distributed data
+                       all-reduction. If ``None``, the default process group, which
+                       is created by :func:`torch.distributed.init_process_group`,
+                       will be used. (default: ``None``)
+        bucket_cap_mb: ``DistributedDataParallel`` will bucket parameters into
+                       multiple buckets so that gradient reduction of each
+                       bucket can potentially overlap with backward computation.
+                       :attr:`bucket_cap_mb` controls the bucket size in
+                       MegaBytes (MB). (default: 25)
+        find_unused_parameters (bool): Traverse the autograd graph from all
+                               tensors contained in the return value of the
+                               wrapped module's ``forward`` function. Parameters
+                               that don't receive gradients as part of this
+                               graph are preemptively marked as being ready to
+                               be reduced. In addition, parameters that may have
+                               been used in the wrapped module's ``forward``
+                               function but were not part of loss computation and
+                               thus would also not receive gradients are
+                               preemptively marked as ready to be reduced.
+                               (default: ``False``)
+        check_reduction: This argument is deprecated.
+        gradient_as_bucket_view (bool): When set to ``True``, gradients will be views
+                      pointing to different offsets of ``allreduce`` communication
+                      buckets. This can reduce peak memory usage, where the
+                      saved memory size will be equal to the total gradients
+                      size. Moreover, it avoids the overhead of copying between
+                      gradients and ``allreduce`` communication buckets. When
+                      gradients are views, ``detach_()`` cannot be called on the
+                      gradients. If hitting such errors, please fix it by
+                      referring to the :meth:`~torch.optim.Optimizer.zero_grad`
+                      function in ``torch/optim/optimizer.py`` as a solution.
+                      Note that gradients will be views after first iteration, so
+                      the peak memory saving should be checked after first iteration.
+        static_graph (bool): When set to ``True``, DDP knows the trained graph is
+                     static. Static graph means 1) The set of used and unused
+                     parameters will not change during the whole training loop; in
+                     this case, it does not matter whether users set
+                     ``find_unused_parameters = True`` or not. 2) How the graph is trained
+                     will not change during the whole training loop (meaning there is
+                     no control flow depending on iterations).
+                     When static_graph is set to be ``True``, DDP will support cases that
+                     can not be supported in the past:
+                     1) Reentrant backwards.
+                     2) Activation checkpointing multiple times.
+                     3) Activation checkpointing when model has unused parameters.
+                     4) There are model parameters that are outside of forward function.
+                     5) Potentially improve performance when there are unused parameters,
+                     as DDP will not search graph in each iteraton to detect unused
+                     parameters when static_graph is set to be ``True``.
+                     To check whether you can set static_graph to be ``True``, one way is to
+                     check ddp logging data at the end of your previous model training,
+                     if ``ddp_logging_data.get("can_set_static_graph") == True``, mostly you
+                     can set ``static_graph = True`` as well.
+
+                     Example::
+                         >>> model_DDP = torch.nn.parallel.DistributedDataParallel(model)
+                         >>> # Training loop
+                         >>> .....
+                         >>> ddp_logging_data = model_DDP._get_ddp_logging_data()
+                         >>> static_graph = ddp_logging_data.get("can_set_static_graph")
+
+```Python
+class DistributedDataParallel(Module, Joinable):
+
+    def __init__(
+        self,
+        module,
+        device_ids=None,
+        output_device=None,
+        dim=0,
+        broadcast_buffers=True,
+        process_group=None,
+        bucket_cap_mb=25,
+        find_unused_parameters=False,
+        check_reduction=False,
+        gradient_as_bucket_view=False,
+        static_graph=False,
+    ):
+
+        super(DistributedDataParallel, self).__init__()
+        Joinable.__init__(self)
+        self.logger = None
+        if not any((p.requires_grad for p in module.parameters())):
+            self._log_and_throw(
+                RuntimeError,
+                "DistributedDataParallel is not needed when a module "
+                "doesn't have any parameter that requires a gradient.",
+            )
+
+        if device_ids is not None and len(device_ids) > 1:
+            self._log_and_throw(
+                ValueError, "device_ids can only be None or contain a single element."
+            )
+
+        self.is_multi_device_module = len({p.device for p in module.parameters()}) > 1
+        distinct_device_types = {p.device.type for p in module.parameters()}
+        if len(distinct_device_types) != 1:
+            self._log_and_throw(
+                ValueError,
+                "DistributedDataParallel's input module must be on "
+                "the same type of devices, but input module parameters locate in {}.".format(
+                    distinct_device_types
+                ),
+            )
+
+        self.device_type = list(distinct_device_types)[0]
+
+        if (
+            device_ids is None
+            or len(device_ids) == 0  # For backward compatibility.
+            or self.device_type == "cpu"
+            or self.is_multi_device_module
+        ):
+            if device_ids or output_device:
+                self._log_and_throw(
+                    ValueError,
+                    "DistributedDataParallel device_ids and output_device arguments "
+                    "only work with single-device/multiple-device GPU modules or CPU modules, "
+                    "but got device_ids {}, output_device {}, and module parameters {}.".format(
+                        device_ids,
+                        output_device,
+                        {p.device for p in module.parameters()},
+                    ),
+                )
+
+            self.device_ids = None
+            self.output_device = None
+        else:
+            self.device_ids = [_get_device_index(x, True) for x in device_ids]
+
+            if output_device is None:
+                output_device = device_ids[0]
+
+            self.output_device = _get_device_index(output_device, True)
+
+        if process_group is None:
+            self.process_group = _get_default_group()
+        else:
+            self.process_group = process_group
+
+        self.static_graph = False
+        self.dim = dim
+        self.module = module
+        self.device = list(self.module.parameters())[0].device
+        self.broadcast_buffers = broadcast_buffers
+        self.find_unused_parameters = find_unused_parameters
+        self.require_backward_grad_sync = True
+        self.require_forward_param_sync = True
+        self.gradient_as_bucket_view = gradient_as_bucket_view
+        if hasattr(module, "_ddp_params_and_buffers_to_ignore"):
+            self.parameters_to_ignore = module._ddp_params_and_buffers_to_ignore
+        else:
+            self.parameters_to_ignore = []
+
+        self._use_replicated_tensor_module = _ddp_with_replicated_tensor_enabled()
+        self._build_replicated_tensor_module()
+
+        if check_reduction:
+            # This argument is no longer used since the reducer
+            # will ensure reduction completes even if some parameters
+            # do not receive gradients.
+            warnings.warn(
+                "The `check_reduction` argument in `DistributedDataParallel` "
+                "module is deprecated. Please avoid using it."
+            )
+
+        # Check that a module does not have Uninitialized parameters
+        for param in module.parameters():
+            if isinstance(param, torch.nn.parameter.UninitializedParameter):
+                self._log_and_throw(
+                    RuntimeError,
+                    "Modules with uninitialized parameters can't be used with `DistributedDataParallel`. "
+                    "Run a dummy forward pass to correctly initialize the modules",
+                )
+        # used for intra-node param sync and inter-node sync as well
+        self.broadcast_bucket_size = int(250 * 1024 * 1024)
+
+        # reduction bucket size
+        self.bucket_bytes_cap = int(bucket_cap_mb * 1024 * 1024)
+        # Whether to perform input tensor CPU to GPU copies on a side-stream
+        self.use_side_stream_for_tensor_copies = (
+            os.environ.get("PYTORCH_DDP_USE_SIDE_STREAM", "1") == "1"
+        )
+
+        # Build parameters for reducer.
+        parameters, expect_sparse_gradient = self._build_params_for_reducer()
+        # Verify model equivalence.
+        _verify_param_shape_across_processes(self.process_group, parameters)
+        # Sync params and buffers. Ensures all DDP models start off at the same value.
+        _sync_module_states(
+            module=self.module,
+            process_group=self.process_group,
+            broadcast_bucket_size=self.broadcast_bucket_size,
+            src=0,
+            params_and_buffers_to_ignore=self.parameters_to_ignore,
+        )
+        # In debug mode, build a mapping of parameter index -> parameter.
+        param_to_name_mapping = self._build_debug_param_to_name_mapping(parameters)
+        # Builds reducer.
+        self._ddp_init_helper(
+            parameters, expect_sparse_gradient, param_to_name_mapping, static_graph
+        )
+        self._has_rebuilt_buckets = False
+
+        if static_graph:
+            self._set_static_graph()
+
+```
+
+
+### RRef
+
+##### 微软的ZeRO
+
+https://zhuanlan.zhihu.com/p/424753593
+
+https://jishuin.proginn.com/p/763bfbd64cf5
+
+> 随着人工智能技术在全球的推广应用，自动驾驶、人脸识别、自然语言处理等越来越多领域通过深度学习大大提升了算法的整体性能和表现，GPU 也成为了训练模型不可或缺的基础计算设备。然而，随着模型规模的不断增
+> 大，加之模型训练的数据量也越来越大，单个 GPU 的计算能力完全无法满足大规模网络的训练需求。在密集型训练的代表——自然语言处理中，OpenAI 在 2020 年 6 月发布的第三代语言模型 GPT-3 的参数量达到了
+> 1700 亿，相比于之前 GPT-2 的最大版本 15 亿个参数增长了百倍以上。2021 年 4 月 25 日，华为云也发布盘古系列超大预训练模型，其中包含30亿参数的全球最大视觉（CV）预训练模型，以及与循环智能、鹏城
+> 实验室联合开发的千亿参数、40TB 训练数据的全球最大中文语言（NLP）预训练模型。这些庞大的模型训练背后，必然少不了一套精妙运转的训练系统的支持，本次分享将揭秘超大模型训练系统中必不可少的一项
+> 技术——ZeRO。
+
+
+
+##### ZeroRedundancyOptimizer
+参考https://www.cnblogs.com/rossiXYZ/p/15782054.html
+
+近日，PyTorch1.10版本发布，这个版本在分布式训练方面正式发布了ZeroRedundancyOptimizer，对标微软在DeepSpeed中发布的ZeRO，它可以wrap其它任意普通优化器如SGD和Adam等，主要是实现optimizer state在DDP训练过程中切分，从而减少每个节点（进程或者设备）的显存使用。此外，这个版本也发布了Join，这个是一个上下文管理器，用来处理分布式训练中的不均匀样本，DDP和 ZeroRedundancyOptimizer是支持这项功能的。 ​
+
+#### 
 
 ### torch.distributed.rpc
 
@@ -485,4 +779,5 @@ DDP 通过在构建时注册 autograd hook 进行梯度同步。反向传播时�
 - Pytorch的nn.DataParallel https://zhuanlan.zhihu.com/p/102697821
 - https://zhuanlan.zhihu.com/p/358974461
 - https://zhuanlan.zhihu.com/p/79030485
+- https://www.cnblogs.com/rossiXYZ/p/15782054.html
 - https://www.sohu.com/a/467324131_115128#:~:text=%E7%9B%AE%E5%89%8D%EF%BC%8C%E5%BC%80%E6%BA%90%E7%9A%84%20GPT%20%E6%A8%A1%E5%9E%8B%E5%BA%93%E4%B8%BB%E8%A6%81%E6%98%AF%20NVIDIA%E5%BC%80%E5%8F%91%E7%9A%84%20Megatron-LM%20%E5%92%8C%E7%BB%8F%E8%BF%87%E5%BE%AE%E8%BD%AF%E6%B7%B1%E5%BA%A6%E5%AE%9A%E5%88%B6%E5%BC%80%E5%8F%91%E7%9A%84%20DeepSpeed%EF%BC%8C%E5%85%B6%E4%B8%AD%EF%BC%8CDeepSpeed%20%E7%9A%84%E6%A8%A1%E5%9E%8B%E5%B9%B6%E8%A1%8C%E7%AD%89%E5%86%85%E6%A0%B8%E5%8F%96%E8%87%AA,PyTorch%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%AE%AD%E7%BB%83%20GPT%20%E8%80%8C%E8%AE%BE%E8%AE%A1%E3%80%82%20%E4%B8%8D%E8%BF%87%E5%9C%A8%E5%AE%9E%E9%99%85%E8%AE%AD%E7%BB%83%E4%B8%AD%EF%BC%8CPyTorch%20%E3%80%81%20Megatron%E3%80%81DeepSpeed%20%E9%83%BD%E8%B5%B0%E4%BA%86%E4%B8%80%E6%9D%A1%E9%9D%9E%E5%B8%B8%E9%95%BF%E7%9A%84%E5%BC%AF%E8%B7%AF%E3%80%82
