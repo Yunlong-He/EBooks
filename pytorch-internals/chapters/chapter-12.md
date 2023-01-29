@@ -143,11 +143,17 @@ layer1.0.bn1.running_mean torch.Size([64])
 
 
 
-## BFloat16
+## 混合精度训练
 
 BFloat16 (Brain Floating Point)是一种16bit的浮点数格式，动态表达范围和float32是一样的，但是精度低。下一代的Xeon Sapphire Rapids上面可以使用AMX(Advanced Matrix Extensions)对卷积和矩阵乘的操作在BFloat16上进行加速，吞吐量比Float32高一个数量级。
 
 这里主要介绍在PyTorch上面优化BFloat16原生算子的一些小技巧，侧重性能优化方面，不介绍BFloat16训练中涉及的调参问题。
 
+## 算子融合
+## 量化
+## 剪枝
+## TorchMultimodal 库
+ 
 ## 参考
 - PyTorch CPU性能优化（四）：BFloat16 https://zhuanlan.zhihu.com/p/499979372
+- https://zhuanlan.zhihu.com/p/588136197

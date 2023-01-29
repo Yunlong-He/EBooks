@@ -454,7 +454,8 @@ DataParallel只支持数据并行，并且只限于单机上的多卡训练，�
 - 非侵入式编程（Non-intrusive and interceptive API）。大部分算法科学家是在单机下设计并验证算法的，验证可行后再迁移到分布式的环境下进行训练，如果需要对原来的代码进行大量复杂的改造，会给算法工程师带来很大的障碍，因此，PyTorch中的DDP要支持以最少的代码改动将单机算法迁移到分布式下。
 - 性能保证（High Performance）。在分布式下，额外带来的数据传输在很大程度上会造成硬件计算上的不饱和，从而影响性能，因此DDP的另一个重要的设计目标就是保持高性能。
 
-从使用上看，DDP与DP非常相似：
+从使用上看，DDP与DP非常相似，相比单机训练的代码，算法工程师只需要将原有的继承自nn.Module的模型用DistributedDataParallel进行封装就可以了，除此之外，算法工程师还可以设置process_group及Local rank，这是集合通信所需要的。
+
 ```Python
 import argparse
 import torch
@@ -498,7 +499,7 @@ if torch.distributed.get_rank() == 0:
   torch.save(model.module.state_dict(),
              'results/%s/model.pth' % args.save_dir)
 ```
-和DP的区别：
+DDP相比DP，具有以下的优势和特点：
 - DDP支持多进程，而DP只支持单进程多线程。
 - DP的通信成本随着GPU数量线性增长，而DDP支持Ring AllReduce，其通信成本是恒定的，与GPU数量无关。
 - 同步参数，DP通过收集梯度到device[0]，在device[0]更新参数，然后其他设备复制device[0]的参数实现各个模型同步；DDP 通过保证初始状态相同并且改变量也相同（指同步梯度），保证模型同步。
@@ -523,82 +524,20 @@ DDP 通过在构建时注册 autograd hook 进行梯度同步。反向传播时�
         case where a layer is checkpointed multiple times, or when there unused
         parameters in the checkpointed model.
 
+#### DDP的设计与实现
 
+上面的代码只是为了帮助读者理解DDP使用上的简洁性，为了保证分布式训练的性能，在PyTorch中使用了以下方法：
+- Gradient bucketing。PyTorch团队做了一些测试，下图中(a)和(b)给出了基于NCCL和Gloo的通信时间随着通信参数量大小的变化，可以看出较大的通信量可以更好的利用带宽，从而降低整体的通信时间。因此，将梯度分成多个bucket，每个bucket里的梯度准备好了，再对这个bucket进行各个节点间的同步，可以大大提高性能。
+
+<center><img src="../images/ddp_1.png"/></center>
+
+- 通信与计算并行。对梯度进行分桶之后，有两个选择，一是在所有梯度都准备好以后，进行所有梯度的同步，二是在每个桶的梯度准备好后，就开始这个桶的参数同步。显然第二个方案效率更高。但是需要考虑各个节点间的梯度计算完成顺序可能不同，要避免同步的是不同的梯度，如下图中(a)。另一个要注意的是每次训练只会涉及到模型参数的子集，不同节点执行条件的不同，即使是同一个模型，参与训练的可能也是不同的子图，这可能会导致部分梯度永远得不到同步，如下图中(b):
+<center><img src="../images/ddp_2.png"/></center>
+- 
 
 #### DDP初始化代码分析
-DDP的初始化参数如下：
-    module (Module): 需要进行分布式训练的模型
-    device_ids：
-    output_device (int or torch.device): Device location of output for
-                      single-device CUDA modules. For multi-device modules and
-                      CPU modules, it must be ``None``, and the module itself
-                      dictates the output location. (default: ``device_ids[0]``
-                      for single-device modules)
-        broadcast_buffers (bool): Flag that enables syncing (broadcasting)
-                          buffers of the module at beginning of the ``forward``
-                          function. (default: ``True``)
-        process_group: The process group to be used for distributed data
-                       all-reduction. If ``None``, the default process group, which
-                       is created by :func:`torch.distributed.init_process_group`,
-                       will be used. (default: ``None``)
-        bucket_cap_mb: ``DistributedDataParallel`` will bucket parameters into
-                       multiple buckets so that gradient reduction of each
-                       bucket can potentially overlap with backward computation.
-                       :attr:`bucket_cap_mb` controls the bucket size in
-                       MegaBytes (MB). (default: 25)
-        find_unused_parameters (bool): Traverse the autograd graph from all
-                               tensors contained in the return value of the
-                               wrapped module's ``forward`` function. Parameters
-                               that don't receive gradients as part of this
-                               graph are preemptively marked as being ready to
-                               be reduced. In addition, parameters that may have
-                               been used in the wrapped module's ``forward``
-                               function but were not part of loss computation and
-                               thus would also not receive gradients are
-                               preemptively marked as ready to be reduced.
-                               (default: ``False``)
-        check_reduction: This argument is deprecated.
-        gradient_as_bucket_view (bool): When set to ``True``, gradients will be views
-                      pointing to different offsets of ``allreduce`` communication
-                      buckets. This can reduce peak memory usage, where the
-                      saved memory size will be equal to the total gradients
-                      size. Moreover, it avoids the overhead of copying between
-                      gradients and ``allreduce`` communication buckets. When
-                      gradients are views, ``detach_()`` cannot be called on the
-                      gradients. If hitting such errors, please fix it by
-                      referring to the :meth:`~torch.optim.Optimizer.zero_grad`
-                      function in ``torch/optim/optimizer.py`` as a solution.
-                      Note that gradients will be views after first iteration, so
-                      the peak memory saving should be checked after first iteration.
-        static_graph (bool): When set to ``True``, DDP knows the trained graph is
-                     static. Static graph means 1) The set of used and unused
-                     parameters will not change during the whole training loop; in
-                     this case, it does not matter whether users set
-                     ``find_unused_parameters = True`` or not. 2) How the graph is trained
-                     will not change during the whole training loop (meaning there is
-                     no control flow depending on iterations).
-                     When static_graph is set to be ``True``, DDP will support cases that
-                     can not be supported in the past:
-                     1) Reentrant backwards.
-                     2) Activation checkpointing multiple times.
-                     3) Activation checkpointing when model has unused parameters.
-                     4) There are model parameters that are outside of forward function.
-                     5) Potentially improve performance when there are unused parameters,
-                     as DDP will not search graph in each iteraton to detect unused
-                     parameters when static_graph is set to be ``True``.
-                     To check whether you can set static_graph to be ``True``, one way is to
-                     check ddp logging data at the end of your previous model training,
-                     if ``ddp_logging_data.get("can_set_static_graph") == True``, mostly you
-                     can set ``static_graph = True`` as well.
-
-                     Example::
-                         >>> model_DDP = torch.nn.parallel.DistributedDataParallel(model)
-                         >>> # Training loop
-                         >>> .....
-                         >>> ddp_logging_data = model_DDP._get_ddp_logging_data()
-                         >>> static_graph = ddp_logging_data.get("can_set_static_graph")
-
 ```Python
+# torch/nn/parallel/distributed.py
 class DistributedDataParallel(Module, Joinable):
 
     def __init__(
@@ -615,102 +554,17 @@ class DistributedDataParallel(Module, Joinable):
         gradient_as_bucket_view=False,
         static_graph=False,
     ):
+        # ...
 
-        super(DistributedDataParallel, self).__init__()
-        Joinable.__init__(self)
-        self.logger = None
-        if not any((p.requires_grad for p in module.parameters())):
-            self._log_and_throw(
-                RuntimeError,
-                "DistributedDataParallel is not needed when a module "
-                "doesn't have any parameter that requires a gradient.",
-            )
-
-        if device_ids is not None and len(device_ids) > 1:
-            self._log_and_throw(
-                ValueError, "device_ids can only be None or contain a single element."
-            )
-
-        self.is_multi_device_module = len({p.device for p in module.parameters()}) > 1
-        distinct_device_types = {p.device.type for p in module.parameters()}
-        if len(distinct_device_types) != 1:
-            self._log_and_throw(
-                ValueError,
-                "DistributedDataParallel's input module must be on "
-                "the same type of devices, but input module parameters locate in {}.".format(
-                    distinct_device_types
-                ),
-            )
-
-        self.device_type = list(distinct_device_types)[0]
-
-        if (
-            device_ids is None
-            or len(device_ids) == 0  # For backward compatibility.
-            or self.device_type == "cpu"
-            or self.is_multi_device_module
-        ):
-            if device_ids or output_device:
-                self._log_and_throw(
-                    ValueError,
-                    "DistributedDataParallel device_ids and output_device arguments "
-                    "only work with single-device/multiple-device GPU modules or CPU modules, "
-                    "but got device_ids {}, output_device {}, and module parameters {}.".format(
-                        device_ids,
-                        output_device,
-                        {p.device for p in module.parameters()},
-                    ),
-                )
-
-            self.device_ids = None
-            self.output_device = None
-        else:
-            self.device_ids = [_get_device_index(x, True) for x in device_ids]
-
-            if output_device is None:
-                output_device = device_ids[0]
-
-            self.output_device = _get_device_index(output_device, True)
-
-        if process_group is None:
-            self.process_group = _get_default_group()
-        else:
-            self.process_group = process_group
-
-        self.static_graph = False
-        self.dim = dim
-        self.module = module
-        self.device = list(self.module.parameters())[0].device
         self.broadcast_buffers = broadcast_buffers
         self.find_unused_parameters = find_unused_parameters
         self.require_backward_grad_sync = True
         self.require_forward_param_sync = True
         self.gradient_as_bucket_view = gradient_as_bucket_view
-        if hasattr(module, "_ddp_params_and_buffers_to_ignore"):
-            self.parameters_to_ignore = module._ddp_params_and_buffers_to_ignore
-        else:
-            self.parameters_to_ignore = []
 
         self._use_replicated_tensor_module = _ddp_with_replicated_tensor_enabled()
         self._build_replicated_tensor_module()
 
-        if check_reduction:
-            # This argument is no longer used since the reducer
-            # will ensure reduction completes even if some parameters
-            # do not receive gradients.
-            warnings.warn(
-                "The `check_reduction` argument in `DistributedDataParallel` "
-                "module is deprecated. Please avoid using it."
-            )
-
-        # Check that a module does not have Uninitialized parameters
-        for param in module.parameters():
-            if isinstance(param, torch.nn.parameter.UninitializedParameter):
-                self._log_and_throw(
-                    RuntimeError,
-                    "Modules with uninitialized parameters can't be used with `DistributedDataParallel`. "
-                    "Run a dummy forward pass to correctly initialize the modules",
-                )
         # used for intra-node param sync and inter-node sync as well
         self.broadcast_bucket_size = int(250 * 1024 * 1024)
 
@@ -733,8 +587,7 @@ class DistributedDataParallel(Module, Joinable):
             src=0,
             params_and_buffers_to_ignore=self.parameters_to_ignore,
         )
-        # In debug mode, build a mapping of parameter index -> parameter.
-        param_to_name_mapping = self._build_debug_param_to_name_mapping(parameters)
+
         # Builds reducer.
         self._ddp_init_helper(
             parameters, expect_sparse_gradient, param_to_name_mapping, static_graph
@@ -745,7 +598,23 @@ class DistributedDataParallel(Module, Joinable):
             self._set_static_graph()
 
 ```
+初始化参数如下：
+|参数|描述|
+|---|---|
+|module|需要进行分布式训练的模型|
+|device_ids|对于单设备模型，device_ids可以是None，或者是模型所在的设备。对于多设备模型或者CPU模型，device_ids必须为None|
+|output_device|对于单设备模型，device_ids是模型输出所在的设备。对于多设备模型或者CPU模型，device_ids必须为None|
+|broadcast_buffers|标志位，表示是否在forward方法开始的时候在各节点间同步参数，缺省为True|
+|process_group|进行分布式训练的进程集合，用来进行all-reduce通信，缺省为init_process_group()方法创建的process_group|
+|bucket_cap_mb|梯度分桶时的桶的大小，缺省为25MB|
+|find_unused_parameters|标志位，表示是否需要预先搜索参与forward但未参与梯度计算的参数，如果有这样的参数，可以优先设置其梯度计算完成并准备好同步|
+|check_reduction|已过时|
+|gradient_as_bucket_view|标志位，表示是否直接将梯度表示为桶的形式，从而避免all-reduce通信前的拷贝工作，注意这种情况下不能调用梯度的detach_()方法|
+|static_graph|标志位，表示在整个训练期间计算图是否固定不变，如果不变，参与梯度计算的参数也是固定的，在这种情况下，DDP可以支持：（1）backward的重入调用；（2）多次计算激活检查点；（3）部分参数不参与梯度计算时计算激活检查点；（4）部分参数未参与forward过程；（5）部分参数不参与梯度计算时，可能的性能优化|
 
+在初始化过程中，主要的过程包括：
+- 设置指定的标志位
+- 
 
 ### RRef
 
@@ -781,3 +650,4 @@ https://jishuin.proginn.com/p/763bfbd64cf5
 - https://zhuanlan.zhihu.com/p/79030485
 - https://www.cnblogs.com/rossiXYZ/p/15782054.html
 - https://www.sohu.com/a/467324131_115128#:~:text=%E7%9B%AE%E5%89%8D%EF%BC%8C%E5%BC%80%E6%BA%90%E7%9A%84%20GPT%20%E6%A8%A1%E5%9E%8B%E5%BA%93%E4%B8%BB%E8%A6%81%E6%98%AF%20NVIDIA%E5%BC%80%E5%8F%91%E7%9A%84%20Megatron-LM%20%E5%92%8C%E7%BB%8F%E8%BF%87%E5%BE%AE%E8%BD%AF%E6%B7%B1%E5%BA%A6%E5%AE%9A%E5%88%B6%E5%BC%80%E5%8F%91%E7%9A%84%20DeepSpeed%EF%BC%8C%E5%85%B6%E4%B8%AD%EF%BC%8CDeepSpeed%20%E7%9A%84%E6%A8%A1%E5%9E%8B%E5%B9%B6%E8%A1%8C%E7%AD%89%E5%86%85%E6%A0%B8%E5%8F%96%E8%87%AA,PyTorch%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%AE%AD%E7%BB%83%20GPT%20%E8%80%8C%E8%AE%BE%E8%AE%A1%E3%80%82%20%E4%B8%8D%E8%BF%87%E5%9C%A8%E5%AE%9E%E9%99%85%E8%AE%AD%E7%BB%83%E4%B8%AD%EF%BC%8CPyTorch%20%E3%80%81%20Megatron%E3%80%81DeepSpeed%20%E9%83%BD%E8%B5%B0%E4%BA%86%E4%B8%80%E6%9D%A1%E9%9D%9E%E5%B8%B8%E9%95%BF%E7%9A%84%E5%BC%AF%E8%B7%AF%E3%80%82
+- https://view.inews.qq.com/a/20220512A09JJ500
