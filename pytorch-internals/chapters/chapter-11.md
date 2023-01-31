@@ -524,7 +524,7 @@ DDP 通过在构建时注册 autograd hook 进行梯度同步。反向传播时�
         case where a layer is checkpointed multiple times, or when there unused
         parameters in the checkpointed model.
 
-#### DDP的设计与实现
+### DDP的设计与实现
 
 上面的代码只是为了帮助读者理解DDP使用上的简洁性，为了保证分布式训练的性能，在PyTorch中使用了以下方法：
 - Gradient bucketing。PyTorch团队做了一些测试，下图中(a)和(b)给出了基于NCCL和Gloo的通信时间随着通信参数量大小的变化，可以看出较大的通信量可以更好的利用带宽，从而降低整体的通信时间。因此，将梯度分成多个bucket，每个bucket里的梯度准备好了，再对这个bucket进行各个节点间的同步，可以大大提高性能。
@@ -533,9 +533,12 @@ DDP 通过在构建时注册 autograd hook 进行梯度同步。反向传播时�
 
 - 通信与计算并行。对梯度进行分桶之后，有两个选择，一是在所有梯度都准备好以后，进行所有梯度的同步，二是在每个桶的梯度准备好后，就开始这个桶的参数同步。显然第二个方案效率更高。但是需要考虑各个节点间的梯度计算完成顺序可能不同，要避免同步的是不同的梯度，如下图中(a)。另一个要注意的是每次训练只会涉及到模型参数的子集，不同节点执行条件的不同，即使是同一个模型，参与训练的可能也是不同的子图，这可能会导致部分梯度永远得不到同步，如下图中(b):
 <center><img src="../images/ddp_2.png"/></center>
-- 
 
-#### DDP初始化代码分析
+- 梯度累积和no_sync。在工业化场景中，经常会有使用很大的batch_size的情况（例如训练大模型，或者训练集非常大，通过使用大的batch_size可以加速收敛），但是每个设备能够处理的batch是受内存或者显存限制的，一般的解决办法是使用micro_batch，在计算micro_batch之间是没有必要进行梯度的all_reduce通信的。PyTorch的做法是将micro_batch计算中的梯度累积起来，完成整个batch_size之后再进行all_reduce的通信。DDP提供了上下文控制no_sync，可以临时取消all_reduce通信，如下：
+
+
+
+### DDP初始化代码分析
 ```Python
 # torch/nn/parallel/distributed.py
 class DistributedDataParallel(Module, Joinable):
@@ -615,6 +618,106 @@ class DistributedDataParallel(Module, Joinable):
 在初始化过程中，主要的过程包括：
 - 设置指定的标志位
 - 
+
+### DDP的初始化
+``` Python
+# torch/nn/parallel/distributed.py
+class DistributedDataParallel(Module, Joinable):
+
+    def _ddp_init_helper(
+        self, parameters, expect_sparse_gradient, param_to_name_mapping,
+        static_graph
+    ):
+        """
+        Initialization helper function that does the following:
+        (1) bucketing the parameters for reductions
+        (2) resetting the bucketing states
+        (3) registering the grad hooks
+        (4) Logging construction-time DDP logging data
+        (5) passing a handle of DDP to SyncBatchNorm Layer
+        """
+        self.num_iterations = 0
+        # Notice, the parameters order is not in the order in which they are used,
+        # especially in models with control flow.
+        #
+        # Alongside parameters are not presented in the real execution order,
+        # if a certain model happens to also
+        #   1) have other collectives comm ops in its backward graph.
+        #   2) have unused parameter in subset ranks of the whole world.
+        # bucketing could insert ALL-REDUCE comm op too early on the rank with unused parameter,
+        # matching up with other collectives comm ops on other ranks unexpectedly.
+        #
+        # In order to handle this corner case, when the parameters are not in the real execution order,
+        # we don't do bucketing, thus only one ALL-REDUCE is inserted after all the gradients
+        # of the whole graph are computed.
+        #
+        # Notice, here we only disable bucketing for the first iteration.
+        # After the first iteration, it's OK to rebuild buckets,
+        # because "bucket rebuild" bucketizes parameters based on its real execution order in backward graph.
+
+        # Can remove this branching once #73732 is landed.
+        if static_graph is True or self.find_unused_parameters is False:
+            bucket_size_limits = [sys.maxsize]
+        else:
+            bucket_size_limits = [dist._DEFAULT_FIRST_BUCKET_BYTES, self.bucket_bytes_cap]
+        bucket_indices, per_bucket_size_limits = dist._compute_bucket_assignment_by_size(
+            parameters,
+            bucket_size_limits,
+            expect_sparse_gradient,
+        )
+
+        # Note: reverse list of buckets because we want to approximate the
+        # order in which their gradients are produced, and assume they
+        # are used in the forward pass in the order they are defined.
+        self.reducer = dist.Reducer(
+            parameters,
+            list(reversed(bucket_indices)),
+            list(reversed(per_bucket_size_limits)),
+            self.process_group,
+            expect_sparse_gradient,
+            # The bucket size limit is specified in the constructor.
+            # Additionally, we allow for a single small bucket for parameters
+            # that are defined first, such that their gradients don't spill into
+            # a much larger bucket, adding unnecessary latency after gradient
+            # computation finishes. Experiments showed 1MB is a reasonable value.
+            self.bucket_bytes_cap,
+            self.find_unused_parameters,
+            self.gradient_as_bucket_view,
+            param_to_name_mapping,
+            # User can set dist._DEFAULT_FIRST_BUCKET_BYTES to tune DDP first
+            # bucket.
+            dist._DEFAULT_FIRST_BUCKET_BYTES
+        )
+
+        self.logger = dist.Logger(self.reducer)
+        # Set as a weak reference to avoid reference cycle between
+        # logger and reducer.
+        self.reducer.set_logger(self.logger)
+
+        has_sync_bn = False
+        for submodule in self.module.modules():
+            if isinstance(submodule, torch.nn.SyncBatchNorm):
+                has_sync_bn = True
+                break
+
+        # Set logging data that can be got during construction time.
+        self.logger.set_construction_data_and_log(
+            self.module.__class__.__name__,
+            [] if self.device_ids is None else self.device_ids,
+            -1 if self.output_device is None else self.output_device,
+            self.broadcast_buffers,
+            has_sync_bn,
+            static_graph,
+        )
+
+        # passing a handle to torch.nn.SyncBatchNorm layer
+        self._passing_sync_batchnorm_handle(self.module)
+
+```
+
+### 需要注意的几点
+- 在初始化DDP之后，不要随意修改模型参数，否则DDP的配置与实际的参数不同，可能会造成潜在的问题
+- 某些特殊的训练过程，如NAS，每次迭代只会修改一部分参数，这时find_unused_parameters需要设置为True
 
 ### RRef
 
