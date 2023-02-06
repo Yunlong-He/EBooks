@@ -617,7 +617,19 @@ class DistributedDataParallel(Module, Joinable):
 
 在初始化过程中，主要的过程包括：
 - 设置指定的标志位
-- 
+- 同步各节点之间的模型状态，这一步是通过在rank=0的进程里向其他进程发起同步请求完成的。
+```Python
+        # Sync params and buffers. Ensures all DDP models start off at the same value.
+        _sync_module_states(
+            module=self.module,
+            process_group=self.process_group,
+            broadcast_bucket_size=self.broadcast_bucket_size,
+            src=0,
+            params_and_buffers_to_ignore=self.parameters_to_ignore,
+        )
+
+```
+
 
 ### DDP的初始化
 ``` Python
@@ -714,6 +726,140 @@ class DistributedDataParallel(Module, Joinable):
         self._passing_sync_batchnorm_handle(self.module)
 
 ```
+
+其中，_compute_bucket_assignment_by_size函数的实现在C++中。
+
+```C++
+// torch/csrc/distributed/c10d/reducer.cpp
+
+std::tuple<std::vector<std::vector<size_t>>, std::vector<size_t>>
+compute_bucket_assignment_by_size(
+    const std::vector<at::Tensor>& tensors,
+    const std::vector<size_t>& bucket_size_limits,
+    const std::vector<bool>& expect_sparse_gradient,
+    const std::vector<int64_t>& tensor_indices,
+    const c10::optional<std::weak_ptr<c10d::Logger>>& logger) {
+  // Either expect_sparse_gradient is not specified or it has as many elements
+  // as the vector with tensors.
+  TORCH_INTERNAL_ASSERT(
+      expect_sparse_gradient.empty() ||
+      (tensors.size() == expect_sparse_gradient.size()));
+  TORCH_INTERNAL_ASSERT(tensors.size() > 0);
+  // Store bucket indices and their sizes together, because we later sort the
+  // resulting indices by minimum tensor index and want to keep sizes
+  // consistent.
+  std::vector<std::tuple<std::vector<size_t>, size_t>> result;
+  // Sparse tensors go in their own bucket, so they do not have an enforced size
+  // limit.
+  size_t kNoSizeLimit = 0;
+  result.reserve(tensors.size());
+
+  // Keep iterator into the size_limit vector by tensor type and device.
+  // This is done so that we can use the consecutive bucket limits per type.
+  std::unordered_map<
+      BucketKey,
+      std::vector<size_t>::const_iterator,
+      c10::hash<BucketKey>>
+      bucket_size_limit_iterators;
+
+  // Keep vector of indices and size accumulator by tensor type and device.
+  std::unordered_map<BucketKey, BucketAccumulator, c10::hash<BucketKey>>
+      buckets;
+
+  for (const auto i : c10::irange(tensors.size())) {
+    const auto& tensor = tensors[i];
+    auto msg = std::string("No support for sparse tensors.");
+    if (logger.has_value()) {
+      REDUCER_CHECK(!tensor.is_sparse(), logger.value(), msg);
+    } else {
+      TORCH_CHECK(!tensor.is_sparse(), msg);
+    }
+
+    // when tensor_indices is empty, the index of tensors[i] assigned to
+    // bucket is i, otherwise the tensor index is tensor_indices[i].
+    auto tensor_index = i;
+    if (!tensor_indices.empty()) {
+      tensor_index = tensor_indices[i];
+    }
+    // If we expect a sparse gradient to be produced for this tensor, it cannot
+    // be grouped together with other gradients and gets its own bucket.
+    if (!expect_sparse_gradient.empty() &&
+        expect_sparse_gradient[tensor_index]) {
+          result.emplace_back(std::vector<size_t>({tensor_index}), kNoSizeLimit);
+          continue;
+    }
+
+    auto key = BucketKey(tensor.scalar_type(), tensor.device());
+    auto& bucket = buckets[key];
+    bucket.indices.push_back(tensor_index);
+    bucket.size += tensor.numel() * tensor.element_size();
+
+    // Initialize bucket size limit iterator if necessary.
+    if (bucket_size_limit_iterators.count(key) == 0) {
+      bucket_size_limit_iterators[key] = bucket_size_limits.begin();
+    }
+
+    auto& bucket_size_limit_iterator = bucket_size_limit_iterators[key];
+    const auto bucket_size_limit = *bucket_size_limit_iterator;
+    bucket.size_limit = bucket_size_limit;
+    if (bucket.size >= bucket_size_limit) {
+      result.emplace_back(std::move(bucket.indices), bucket.size_limit);
+      bucket = BucketAccumulator();
+
+      // Advance to the next bucket size limit for this type/device.
+      auto next = bucket_size_limit_iterator + 1;
+      if (next != bucket_size_limits.end()) {
+        bucket_size_limit_iterator = next;
+      }
+    }
+  }
+
+  // Add remaining buckets.
+  for (auto& it : buckets) {
+    auto& bucket = it.second;
+    if (!bucket.indices.empty()) {
+      result.emplace_back(std::move(bucket.indices), bucket.size_limit);
+    }
+  }
+
+  // If tensor_indices is not empty, the order of the tensors is in the gradient
+  // ready order, so no need to sort.
+  // If tensor_indices is empty, sort resulting buckets by the minimum tensor
+  // index they include. We assume that the order of the tensors is the order in
+  // which they are used (or the reverse order in which their gradients are
+  // produced). This sorting step ensures that the buckets are ready in
+  // consecutive order.
+  if (tensor_indices.empty()) {
+    std::sort(
+        result.begin(),
+        result.end(),
+        [](const std::tuple<std::vector<size_t>, size_t>& a,
+           const std::tuple<std::vector<size_t>, size_t>& b) {
+          auto indices_a = std::get<0>(a);
+          auto indices_b = std::get<0>(b);
+          const auto amin =
+              std::min_element(indices_a.begin(), indices_a.end());
+          const auto bmin =
+              std::min_element(indices_b.begin(), indices_b.end());
+          return *amin < *bmin;
+        });
+  }
+
+  // Return bucket indices and size limits as separate entries in tuple, as some
+  // APIs only need to consume bucket indices.
+  std::vector<std::vector<size_t>> bucket_indices;
+  bucket_indices.reserve(result.size());
+  std::vector<size_t> per_bucket_size_limits;
+  per_bucket_size_limits.reserve(result.size());
+  for (const auto& bucket_indices_with_size : result) {
+    bucket_indices.emplace_back(std::get<0>(bucket_indices_with_size));
+    per_bucket_size_limits.emplace_back(std::get<1>(bucket_indices_with_size));
+  }
+  return std::make_tuple(bucket_indices, per_bucket_size_limits);
+}
+```
+从实现上可以看到，每个Bucket里包含的tensor必须是同一种类型，并且在同一个设备上。
+
 
 ### 需要注意的几点
 - 在初始化DDP之后，不要随意修改模型参数，否则DDP的配置与实际的参数不同，可能会造成潜在的问题
