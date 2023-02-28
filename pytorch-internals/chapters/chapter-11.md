@@ -617,19 +617,107 @@ class DistributedDataParallel(Module, Joinable):
 
 在初始化过程中，主要的过程包括：
 - 设置指定的标志位
-- 同步各节点之间的模型状态，这一步是通过在rank=0的进程里向其他进程发起同步请求完成的。
-```Python
-        # Sync params and buffers. Ensures all DDP models start off at the same value.
-        _sync_module_states(
-            module=self.module,
-            process_group=self.process_group,
-            broadcast_bucket_size=self.broadcast_bucket_size,
-            src=0,
-            params_and_buffers_to_ignore=self.parameters_to_ignore,
-        )
+- 同步各节点之间的模型状态，这一步是通过在rank=0的进程里向其他进程发起同步请求完成的，调用的是_sync_module_states()这个函数，其实现在下边介绍。
+- 调用_sync_module_states初始化DDP
+
+
+### 初始模型参数同步
+在进行模型参数同步的时候，调用的是torch.distributed.utils._sync_params_and_buffers()函数，该函数进一步调用了dist._broadcast_coalesced()，这个函数的实现在C++中:
+
+```C++
+// torch/csrc/distributed/c10d/init.cpp
+
+  auto torch_C_m = py::handle(torch_C_module).cast<py::module>();
+  auto m =
+      torch_C_m.def_submodule("_distributed_c10d", "distributed c10d bindings");
+
+  auto module = py::handle(m).cast<py::module>();
+  
+  // ...
+
+  module.def(
+      "_broadcast_coalesced",
+      // Define a lambda such that the pybind11 prototype can take a std::vector
+      // for the tensor list argument, but still pass it to the underlying
+      // function as a c10::ArrayRef.
+      [](c10::intrusive_ptr<::c10d::ProcessGroup> process_group,
+         std::vector<at::Tensor> tensors, // NOLINT
+         size_t buffer_size,
+         int rank) {
+        broadcast_coalesced(
+            std::move(process_group), tensors, buffer_size, rank);
+      },
+      py::arg("process_group"),
+      py::arg("tensors"),
+      py::arg("buffer_size"),
+      // The source of truth rank to broadcast the tensors from.
+      py::arg("src") = 0,
+      py::call_guard<py::gil_scoped_release>());
 
 ```
+broadcast_coalesced()这个函数比较特别，是设备相关的，可以在cuda的实现中找到：
 
+```C++
+// torch/csrc/cuda/comm.cpp
+
+tensor_list2d broadcast_coalesced(
+    TensorList tensors,
+    IntArrayRef devices,
+    size_t buffer_size) {
+  // ...
+
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  tensor_list2d outputs(devices.size());
+  outputs[0] = tensors.vec();
+  for (auto& o : outputs)
+    o.reserve(tensors.size());
+
+  unique_type_checker type_checker;
+  at::cuda::CUDAGuard device_guard(devices[0]);
+  for (auto& chunk : utils::take_tensors(tensors, buffer_size)) {
+    auto type_id = chunk.type_id();
+    type_checker.show(type_id);
+    std::vector<at::Tensor> results;
+    if (chunk.options().is_sparse()) {
+      auto flat_tuple = utils::flatten_sparse_tensors(chunk.tensors);
+      auto broadcast_indices = broadcast(flat_tuple.first, devices);
+      auto broadcast_values = broadcast(flat_tuple.second, devices);
+      results.reserve(devices.size());
+      for (size_t i = 1, num_devices = devices.size(); i < num_devices; ++i) {
+        device_guard.set_index(devices[i]);
+        auto& device_outputs = outputs[i];
+        auto& inds = broadcast_indices[i];
+        auto& vals = broadcast_values[i];
+        for (const auto& var :
+             utils::unflatten_sparse_tensors(inds, vals, chunk.tensors)) {
+          // See NOTE [ Version Counter in comm.*_coalesced ]
+          device_outputs.push_back(make_variable(var.tensor_data(), false));
+        }
+      }
+    } else {
+      auto results =
+          broadcast(utils::flatten_dense_tensors(chunk.tensors), devices);
+      for (size_t i = 1, num_devices = devices.size(); i < num_devices; ++i) {
+        device_guard.set_index(devices[i]);
+        auto& device_outputs = outputs[i];
+        for (auto& var :
+             utils::unflatten_dense_tensors(results[i], chunk.tensors)) {
+          // See NOTE [ Version Counter in comm.*_coalesced ]
+          device_outputs.push_back(make_variable(var.tensor_data(), false));
+        }
+      }
+    }
+  }
+
+  // If we only saw a single tensor type, then we can skip expensive reordering
+  if (!type_checker.unique) {
+    for (auto& o : outputs)
+      utils::reorder_tensors_like(o, tensors);
+  }
+  return outputs;
+}
+
+```
 
 ### DDP的初始化
 ``` Python
@@ -868,6 +956,24 @@ compute_bucket_assignment_by_size(
 ### RRef
 
 ##### 微软的ZeRO
+
+ZeRO (Zero Redundancy Optimizer) 是微软开发的一个通用机器学习框架，它的目标是通过减少冗余，来提高机器学习模型的性能。
+
+ZeRO的核心理念是使用冗余度来优化模型，以提高性能。冗余度是指一个模型中重复的参数和操作的数量。在ZeRO框架中，优化的目的是减少模型中的冗余，以便节省内存和提高性能。
+
+为了达到这一目的，ZeRO框架提供了一系列技术，包括模型压缩，缓存优化，数据并行化，模型混合，训练加速，以及模型冗余度优化等。
+
+首先，ZeRO框架提供了一系列模型压缩技术，以实现有效的模型压缩。例如，可以使用剪裁（pruning），量化（quantization），稀疏性（sparsity）等技术，来降低模型的内存消耗，并提高计算效率。
+
+其次，ZeRO框架通过缓存优化技术，来提高模型的性能。它可以有效地利用缓存的特性，并将稀疏缓存与模型的系统进行整合，从而提高模型的性能。
+
+此外，ZeRO框架还为深度学习模型提供了数据并行化技术。通过数据并行化，可以将模型分解成多个子模型，并将它们部署到多个机器上。这种方法可以有效地提高模型的性能。
+
+此外，ZeRO框架还支持模型混合技术，以实现模型的可扩展性和伸缩性。模型混合技术可以结合多个不同的模型，以提高模型的性能和准确性。
+
+最后，ZeRO框架还提供了模型冗余度优化技术，用于训练模型时的计算优化。该技术可以有效地分析模型中的冗余并进行优化，从而提高模型的性能。
+
+总之，ZeRO框架是一个通用的机器学习框架，它的目标是通过减少模型中的冗余，来提高性能。ZeRO框架的技术包括模型压缩，缓存优化，数据并行化，模型混合，训练加速，以及模型冗余度优化等。通过将这些技术结合起来，可以有效地降低模型的内存消耗，提高计算效率，增强模型的性能和准确性。
 
 https://zhuanlan.zhihu.com/p/424753593
 
